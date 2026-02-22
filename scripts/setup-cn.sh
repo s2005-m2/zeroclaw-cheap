@@ -61,7 +61,10 @@ fi
 
 # ── Step 1: Build ─────────────────────────────────────────────────────────────
 if [[ "$SKIP_BUILD" == false ]]; then
-  info "Installing ZeroClaw with China features: $CN_FEATURES"
+  if command -v zeroclaw &>/dev/null; then
+    info "Removing existing zeroclaw binary before rebuild..."
+    cargo uninstall zeroclaw 2>/dev/null || true
+  fi
   cargo install --path . --force --features "$CN_FEATURES"
   info "Build complete: $(which zeroclaw 2>/dev/null || echo 'target/release/zeroclaw')"
 else
