@@ -55,6 +55,7 @@ download() {
 command -v curl >/dev/null || err "curl is required but not found"
 if [[ "$SKIP_BUILD" == false ]]; then
   command -v cargo >/dev/null || err "cargo is required. Install Rust: https://rustup.rs"
+  command -v protoc >/dev/null || { info "Installing protobuf-compiler..."; sudo apt-get install -y protobuf-compiler || err "Failed to install protoc"; }
 fi
 
 # ── Step 1: Build ─────────────────────────────────────────────────────────────
