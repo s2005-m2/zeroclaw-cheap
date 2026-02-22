@@ -395,6 +395,7 @@ pub async fn run_quick_setup(
     model_override: Option<&str>,
     memory_backend: Option<&str>,
     force: bool,
+    compact_context: bool,
 ) -> Result<Config> {
     let home = directories::UserDirs::new()
         .map(|u| u.home_dir().to_path_buf())
@@ -406,6 +407,7 @@ pub async fn run_quick_setup(
         model_override,
         memory_backend,
         force,
+        compact_context,
         &home,
     )
     .await
@@ -440,6 +442,7 @@ async fn run_quick_setup_with_home(
     model_override: Option<&str>,
     memory_backend: Option<&str>,
     force: bool,
+    compact_context: bool,
     home: &Path,
 ) -> Result<Config> {
     println!("{}", style(BANNER).cyan().bold());
@@ -487,7 +490,7 @@ async fn run_quick_setup_with_home(
         runtime: RuntimeConfig::default(),
         reliability: crate::config::ReliabilityConfig::default(),
         scheduler: crate::config::schema::SchedulerConfig::default(),
-        agent: crate::config::schema::AgentConfig::default(),
+        agent: crate::config::schema::AgentConfig { compact_context, ..crate::config::schema::AgentConfig::default() },
         skills: crate::config::SkillsConfig::default(),
         model_routes: Vec::new(),
         embedding_routes: Vec::new(),

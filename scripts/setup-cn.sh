@@ -95,20 +95,29 @@ else
   info "Skipping model download (--skip-models)"
 fi
 
-# ── Step 3: Print config hint ─────────────────────────────────────────────────
-info ""
-info "Setup complete! Add the following to ~/.zeroclaw/config.toml:"
-info ""
-info "  [memory]"
-info "  backend = \"lancedb\""
-info "  embedding_provider = \"local\""
-info "  embedding_model = \"$EMBEDDING_DIR\""
-info "  embedding_dims = 768"
-info ""
+# ── Step 3: Write config via zeroclaw onboard ────────────────────────────────
+info "Generating base config via zeroclaw onboard..."
+zeroclaw onboard --provider qwen --memory lancedb --compact-context --force
+
+# Post-patch settings not covered by onboard flags
+CONFIG_FILE="$ZEROCLAW_HOME/config.toml"
+ensure_toml_key() {
+  local section="$1" key="$2" value="$3"
+  if grep -q "^\[$section\]" "$CONFIG_FILE"; then
+    if ! grep -q "^$key\s*=" "$CONFIG_FILE"; then
+      sed -i.bak "/^\[$section\]/a $key = $value" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
+    fi
+  else
+    printf '\n[%s]\n%s = %s\n' "$section" "$key" "$value" >> "$CONFIG_FILE"
+  fi
+}
+ensure_toml_key memory embedding_provider '"local"'
+ensure_toml_key memory embedding_model '"'"$EMBEDDING_DIR"'"'
+ensure_toml_key memory embedding_dims 768
 if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
-  info "  [transcription]"
-  info "  provider = \"local\""
-  info "  model = \"$SENSEVOICE_DIR\""
-  info ""
+  ensure_toml_key transcription provider '"local"'
+  ensure_toml_key transcription model '"'"$SENSEVOICE_DIR"'"'
 fi
-info "Then run: zeroclaw onboard --provider qwen --api-key sk-YOUR_DASHSCOPE_KEY"
+info "Config patched with local embedding/transcription settings"
+
+info "To set your API key, run: zeroclaw onboard --provider qwen --api-key sk-YOUR_DASHSCOPE_KEY"
