@@ -490,7 +490,7 @@ async fn run_quick_setup_with_home(
         runtime: RuntimeConfig::default(),
         reliability: crate::config::ReliabilityConfig::default(),
         scheduler: crate::config::schema::SchedulerConfig::default(),
-        agent: crate::config::schema::AgentConfig { compact_context, ..crate::config::schema::AgentConfig::default() },
+        agent: crate::config::schema::AgentConfig::default(),
         skills: crate::config::SkillsConfig::default(),
         model_routes: Vec::new(),
         embedding_routes: Vec::new(),

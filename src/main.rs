@@ -148,9 +148,6 @@ enum Commands {
         /// Memory backend (sqlite, lucid, markdown, none) - used in quick mode, default: sqlite
         #[arg(long)]
         memory: Option<String>,
-        /// Enable compact context mode (reduced bootstrap prompt and RAG) - used in quick mode
-        #[arg(long)]
-        compact_context: bool,
     },
 
     /// Start the AI agent loop
@@ -630,13 +627,13 @@ async fn main() -> Result<()> {
         provider,
         model,
         memory,
-        compact_context,
+    } = &cli.command
     } = &cli.command
     {
         let interactive = *interactive;
         let force = *force;
         let channels_only = *channels_only;
-        let compact_context = *compact_context;
+        let api_key = api_key.clone();
         let api_key = api_key.clone();
         let provider = provider.clone();
         let model = model.clone();
@@ -664,7 +661,7 @@ async fn main() -> Result<()> {
                 model.as_deref(),
                 memory.as_deref(),
                 force,
-                compact_context,
+            )
             )
             .await
         }?;
