@@ -73,22 +73,30 @@ if [[ "$SKIP_MODELS" == false ]]; then
   info "Models directory: $MODELS_DIR"
 
   # ── 2a: EmbeddingGemma-300m Q8 ONNX ──
-  EMBED_REPO="onnx-community/embeddinggemma-300m-ONNX"
-  EMBED_BASE="$HF_MIRROR/$EMBED_REPO/resolve/main/onnx"
-  mkdir -p "$EMBEDDING_DIR"
-  download "$EMBED_BASE/model_quantized.onnx"      "$EMBEDDING_DIR/model_quantized.onnx"
-  download "$EMBED_BASE/model_quantized.onnx_data" "$EMBEDDING_DIR/model_quantized.onnx_data"
-  download "$HF_MIRROR/$EMBED_REPO/resolve/main/tokenizer.json" "$EMBEDDING_DIR/tokenizer.json"
-  info "Embedding model ready: $EMBEDDING_DIR"
+  if [[ -f "$EMBEDDING_DIR/model_quantized.onnx" && -f "$EMBEDDING_DIR/model_quantized.onnx_data" && -f "$EMBEDDING_DIR/tokenizer.json" ]]; then
+    info "Embedding model already exists, skipping: $EMBEDDING_DIR"
+  else
+    EMBED_REPO="onnx-community/embeddinggemma-300m-ONNX"
+    EMBED_BASE="$HF_MIRROR/$EMBED_REPO/resolve/main/onnx"
+    mkdir -p "$EMBEDDING_DIR"
+    download "$EMBED_BASE/model_quantized.onnx"      "$EMBEDDING_DIR/model_quantized.onnx"
+    download "$EMBED_BASE/model_quantized.onnx_data" "$EMBEDDING_DIR/model_quantized.onnx_data"
+    download "$HF_MIRROR/$EMBED_REPO/resolve/main/tokenizer.json" "$EMBEDDING_DIR/tokenizer.json"
+    info "Embedding model ready: $EMBEDDING_DIR"
+  fi
 
   # ── 2b: SenseVoice-Small (sherpa-onnx format) ──
   if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
-    SV_REPO="csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
-    SV_BASE="$HF_MIRROR/$SV_REPO/resolve/main"
-    mkdir -p "$SENSEVOICE_DIR"
-    download "$SV_BASE/model.onnx"  "$SENSEVOICE_DIR/model.onnx"
-    download "$SV_BASE/tokens.txt" "$SENSEVOICE_DIR/tokens.txt"
-    info "SenseVoice model ready: $SENSEVOICE_DIR"
+    if [[ -f "$SENSEVOICE_DIR/model.onnx" && -f "$SENSEVOICE_DIR/tokens.txt" ]]; then
+      info "SenseVoice model already exists, skipping: $SENSEVOICE_DIR"
+    else
+      SV_REPO="csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+      SV_BASE="$HF_MIRROR/$SV_REPO/resolve/main"
+      mkdir -p "$SENSEVOICE_DIR"
+      download "$SV_BASE/model.onnx"  "$SENSEVOICE_DIR/model.onnx"
+      download "$SV_BASE/tokens.txt" "$SENSEVOICE_DIR/tokens.txt"
+      info "SenseVoice model ready: $SENSEVOICE_DIR"
+    fi
   fi
 else
   info "Skipping model download (--skip-models)"
