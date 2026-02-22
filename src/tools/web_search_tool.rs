@@ -5,7 +5,7 @@ use serde_json::json;
 use std::time::Duration;
 
 /// Web search tool for searching the internet.
-/// Supports multiple providers: DuckDuckGo (free), Brave (requires API key).
+/// Supports multiple providers: Bing (free, no API key) or Brave (requires API key).
 pub struct WebSearchTool {
     provider: String,
     brave_api_key: Option<String>,
@@ -28,9 +28,12 @@ impl WebSearchTool {
         }
     }
 
-    async fn search_duckduckgo(&self, query: &str) -> anyhow::Result<String> {
+    async fn search_bing(&self, query: &str) -> anyhow::Result<String> {
         let encoded_query = urlencoding::encode(query);
-        let search_url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
+        let search_url = format!(
+            "https://www.bing.com/search?q={}&count={}",
+            encoded_query, self.max_results
+        );
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.timeout_secs))
@@ -40,24 +43,23 @@ impl WebSearchTool {
         let response = client.get(&search_url).send().await?;
 
         if !response.status().is_success() {
-            anyhow::bail!(
-                "DuckDuckGo search failed with status: {}",
-                response.status()
-            );
+            anyhow::bail!("Bing search failed with status: {}", response.status());
         }
 
         let html = response.text().await?;
-        self.parse_duckduckgo_results(&html, query)
+        self.parse_bing_results(&html, query)
     }
 
-    fn parse_duckduckgo_results(&self, html: &str, query: &str) -> anyhow::Result<String> {
-        // Extract result links: <a class="result__a" href="...">Title</a>
+    fn parse_bing_results(&self, html: &str, query: &str) -> anyhow::Result<String> {
+        // Bing result: <li class="b_algo"><h2><a href="URL">Title</a></h2>
         let link_regex = Regex::new(
-            r#"<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#,
+            r#"<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>[\s\S]*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#,
         )?;
 
-        // Extract snippets: <a class="result__snippet">...</a>
-        let snippet_regex = Regex::new(r#"<a class="result__snippet[^"]*"[^>]*>([\s\S]*?)</a>"#)?;
+        // Bing snippet: <div class="b_caption"><p>...</p> or <p class="b_algoSlug">...</p>
+        let snippet_regex = Regex::new(
+            r#"<(?:div[^>]*class="[^"]*b_caption[^"]*"[^>]*>[\s\S]*?<p[^>]*>|p[^>]*class="[^"]*b_algoSlug[^"]*"[^>]*>)([\s\S]*?)</p>"#,
+        )?;
 
         let link_matches: Vec<_> = link_regex
             .captures_iter(html)
@@ -73,19 +75,18 @@ impl WebSearchTool {
             return Ok(format!("No results found for: {}", query));
         }
 
-        let mut lines = vec![format!("Search results for: {} (via DuckDuckGo)", query)];
+        let mut lines = vec![format!("Search results for: {} (via Bing)", query)];
 
         let count = link_matches.len().min(self.max_results);
 
         for i in 0..count {
             let caps = &link_matches[i];
-            let url_str = decode_ddg_redirect_url(&caps[1]);
+            let url_str = &caps[1];
             let title = strip_tags(&caps[2]);
 
             lines.push(format!("{}. {}", i + 1, title.trim()));
             lines.push(format!("   {}", url_str.trim()));
 
-            // Add snippet if available
             if i < snippet_matches.len() {
                 let snippet = strip_tags(&snippet_matches[i][1]);
                 let snippet = snippet.trim();
@@ -164,18 +165,6 @@ impl WebSearchTool {
     }
 }
 
-fn decode_ddg_redirect_url(raw_url: &str) -> String {
-    if let Some(index) = raw_url.find("uddg=") {
-        let encoded = &raw_url[index + 5..];
-        let encoded = encoded.split('&').next().unwrap_or(encoded);
-        if let Ok(decoded) = urlencoding::decode(encoded) {
-            return decoded.into_owned();
-        }
-    }
-
-    raw_url.to_string()
-}
-
 fn strip_tags(content: &str) -> String {
     let re = Regex::new(r"<[^>]+>").unwrap();
     re.replace_all(content, "").to_string()
@@ -217,10 +206,10 @@ impl Tool for WebSearchTool {
         tracing::info!("Searching web for: {}", query);
 
         let result = match self.provider.as_str() {
-            "duckduckgo" | "ddg" => self.search_duckduckgo(query).await?,
+            "bing" => self.search_bing(query).await?,
             "brave" => self.search_brave(query).await?,
             _ => anyhow::bail!(
-                "Unknown search provider: '{}'. Set tools.web_search.provider to 'duckduckgo' or 'brave' in config.toml",
+                "Unknown search provider: '{}'. Set tools.web_search.provider to 'bing' or 'brave' in config.toml",
                 self.provider
             ),
         };
@@ -239,19 +228,19 @@ mod tests {
 
     #[test]
     fn test_tool_name() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         assert_eq!(tool.name(), "web_search_tool");
     }
 
     #[test]
     fn test_tool_description() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         assert!(tool.description().contains("Search the web"));
     }
 
     #[test]
     fn test_parameters_schema() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         let schema = tool.parameters_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query"].is_object());
@@ -264,59 +253,58 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_duckduckgo_results_empty() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+    fn test_parse_bing_results_empty() {
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         let result = tool
-            .parse_duckduckgo_results("<html>No results here</html>", "test")
+            .parse_bing_results("<html>No results here</html>", "test")
             .unwrap();
         assert!(result.contains("No results found"));
     }
 
     #[test]
-    fn test_parse_duckduckgo_results_with_data() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+    fn test_parse_bing_results_with_data() {
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         let html = r#"
-            <a class="result__a" href="https://example.com">Example Title</a>
-            <a class="result__snippet">This is a description</a>
+            <li class="b_algo"><h2><a href="https://example.com">Example Title</a></h2>
+            <div class="b_caption"><p>This is a description</p></div></li>
         "#;
-        let result = tool.parse_duckduckgo_results(html, "test").unwrap();
+        let result = tool.parse_bing_results(html, "test").unwrap();
         assert!(result.contains("Example Title"));
         assert!(result.contains("https://example.com"));
     }
 
     #[test]
-    fn test_parse_duckduckgo_results_decodes_redirect_url() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+    fn test_parse_bing_results_direct_url() {
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         let html = r#"
-            <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpath%3Fa%3D1&amp;rut=test">Example Title</a>
-            <a class="result__snippet">This is a description</a>
+            <li class="b_algo"><h2><a href="https://example.com/path?a=1">Example Title</a></h2>
+            <div class="b_caption"><p>This is a description</p></div></li>
         "#;
-        let result = tool.parse_duckduckgo_results(html, "test").unwrap();
+        let result = tool.parse_bing_results(html, "test").unwrap();
         assert!(result.contains("https://example.com/path?a=1"));
-        assert!(!result.contains("rut=test"));
     }
 
     #[test]
     fn test_constructor_clamps_web_search_limits() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 0, 0);
+        let tool = WebSearchTool::new("bing".to_string(), None, 0, 0);
         let html = r#"
-            <a class="result__a" href="https://example.com">Example Title</a>
-            <a class="result__snippet">This is a description</a>
+            <li class="b_algo"><h2><a href="https://example.com">Example Title</a></h2>
+            <div class="b_caption"><p>This is a description</p></div></li>
         "#;
-        let result = tool.parse_duckduckgo_results(html, "test").unwrap();
+        let result = tool.parse_bing_results(html, "test").unwrap();
         assert!(result.contains("Example Title"));
     }
 
     #[tokio::test]
     async fn test_execute_missing_query() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         let result = tool.execute(json!({})).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_execute_empty_query() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("bing".to_string(), None, 5, 15);
         let result = tool.execute(json!({"query": ""})).await;
         assert!(result.is_err());
     }
