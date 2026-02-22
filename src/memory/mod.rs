@@ -255,14 +255,14 @@ pub fn create_memory_with_storage_and_routes(
                 resolved_embedding.dimensions,
             ));
         #[allow(clippy::cast_possible_truncation)]
-        let mem = tokio::runtime::Handle::current().block_on(
-            lancedb::LanceDbMemory::new(
+        let mem = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(lancedb::LanceDbMemory::new(
                 workspace_dir,
                 embedder,
                 config.vector_weight as f32,
                 config.keyword_weight as f32,
-            ),
-        )?;
+            ))
+        })?;
         return Ok(Box::new(mem));
     }
     #[cfg(not(feature = "memory-lancedb"))]

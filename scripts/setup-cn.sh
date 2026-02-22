@@ -9,6 +9,7 @@ ZEROCLAW_HOME="${ZEROCLAW_HOME:-$HOME/.zeroclaw}"
 MODELS_DIR="${ZEROCLAW_MODELS_DIR:-$ZEROCLAW_HOME/models}"
 EMBEDDING_DIR="$MODELS_DIR/embeddinggemma-300m"
 SENSEVOICE_DIR="$MODELS_DIR/sensevoice-small"
+LIB_DIR="$ZEROCLAW_HOME/lib"
 
 # HuggingFace mirror (hf-mirror.com is the standard China mirror)
 HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
@@ -100,6 +101,27 @@ if [[ "$SKIP_MODELS" == false ]]; then
   fi
 else
   info "Skipping model download (--skip-models)"
+fi
+
+# ── Step 2.5: Install sherpa-onnx shared libs ────────────────────────────────
+# sherpa-rs copies .so files to target/release/ at build time, but cargo install
+# only moves the binary — copy shared libs so the runtime linker can find them.
+if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
+  if ! ls "$LIB_DIR"/libsherpa-onnx-c-api.so &>/dev/null; then
+    mkdir -p "$LIB_DIR"
+    for so in target/release/libsherpa-onnx-c-api.so target/release/libonnxruntime.so; do
+      [[ -f "$so" ]] && cp -f "$so" "$LIB_DIR/" && info "Installed $(basename "$so") -> $LIB_DIR/"
+    done
+  fi
+  # Register with ldconfig so zeroclaw can always find the libs
+  if command -v ldconfig &>/dev/null; then
+    echo "$LIB_DIR" | sudo tee /etc/ld.so.conf.d/zeroclaw.conf >/dev/null
+    sudo ldconfig
+    info "Registered $LIB_DIR with ldconfig"
+  else
+    export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    info "ldconfig not found — add to shell profile: export LD_LIBRARY_PATH=\"$LIB_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\""
+  fi
 fi
 
 # ── Step 3: Write config via zeroclaw onboard ────────────────────────────────
