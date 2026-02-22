@@ -186,6 +186,17 @@ pub fn create_embedding_provider(
             let key = api_key.unwrap_or("");
             Box::new(OpenAiEmbedding::new(base_url, key, model, dims))
         }
+        #[cfg(feature = "local-embedding")]
+        "local" | "onnx" => {
+            let model_path = std::path::Path::new(model);
+            match super::onnx_embedding::OnnxEmbeddingProvider::new_with_dims(model_path, dims) {
+                Ok(p) => Box::new(p),
+                Err(e) => {
+                    tracing::warn!("Failed to load local ONNX embedding model: {e}, falling back to noop");
+                    Box::new(NoopEmbedding)
+                }
+            }
+        }
         _ => Box::new(NoopEmbedding),
     }
 }

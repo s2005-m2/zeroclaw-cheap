@@ -13,6 +13,10 @@ pub mod snapshot;
 pub mod sqlite;
 pub mod traits;
 pub mod vector;
+#[cfg(feature = "memory-lancedb")]
+pub mod lancedb;
+#[cfg(feature = "local-embedding")]
+pub mod onnx_embedding;
 
 #[allow(unused_imports)]
 pub use backend::{
@@ -56,6 +60,9 @@ where
         MemoryBackendKind::Postgres => postgres_builder(),
         MemoryBackendKind::Markdown => Ok(Box::new(MarkdownMemory::new(workspace_dir))),
         MemoryBackendKind::None => Ok(Box::new(NoneMemory::new())),
+        MemoryBackendKind::LanceDb => {
+            anyhow::bail!("LanceDb backend must be constructed before calling create_memory_with_builders")
+        }
         MemoryBackendKind::Unknown => {
             tracing::warn!(
                 "Unknown memory backend '{backend_name}'{unknown_context}, falling back to markdown"
@@ -235,6 +242,34 @@ pub fn create_memory_with_storage_and_routes(
                 tracing::warn!("memory hydration failed: {e}");
             }
         }
+    }
+
+    // LanceDb backend: early return (async constructor needs block_on).
+    #[cfg(feature = "memory-lancedb")]
+    if matches!(backend_kind, MemoryBackendKind::LanceDb) {
+        let embedder: Arc<dyn embeddings::EmbeddingProvider> =
+            Arc::from(embeddings::create_embedding_provider(
+                &resolved_embedding.provider,
+                resolved_embedding.api_key.as_deref(),
+                &resolved_embedding.model,
+                resolved_embedding.dimensions,
+            ));
+        #[allow(clippy::cast_possible_truncation)]
+        let mem = tokio::runtime::Handle::current().block_on(
+            lancedb::LanceDbMemory::new(
+                workspace_dir,
+                embedder,
+                config.vector_weight as f32,
+                config.keyword_weight as f32,
+            ),
+        )?;
+        return Ok(Box::new(mem));
+    }
+    #[cfg(not(feature = "memory-lancedb"))]
+    if matches!(backend_kind, MemoryBackendKind::LanceDb) {
+        anyhow::bail!(
+            "memory backend 'lancedb' requested but this build was compiled without `memory-lancedb`; rebuild with `--features memory-lancedb`"
+        );
     }
 
     fn build_sqlite_memory(

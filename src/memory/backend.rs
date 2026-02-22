@@ -4,6 +4,7 @@ pub enum MemoryBackendKind {
     Lucid,
     Postgres,
     Markdown,
+    LanceDb,
     None,
     Unknown,
 }
@@ -55,6 +56,15 @@ const POSTGRES_PROFILE: MemoryBackendProfile = MemoryBackendProfile {
     optional_dependency: true,
 };
 
+const LANCEDB_PROFILE: MemoryBackendProfile = MemoryBackendProfile {
+    key: "lancedb",
+    label: "LanceDB — embedded vector database with ANN search, no external server",
+    auto_save_default: true,
+    uses_sqlite_hygiene: false,
+    sqlite_based: false,
+    optional_dependency: true,
+};
+
 const NONE_PROFILE: MemoryBackendProfile = MemoryBackendProfile {
     key: "none",
     label: "None — disable persistent memory",
@@ -94,6 +104,7 @@ pub fn classify_memory_backend(backend: &str) -> MemoryBackendKind {
         "lucid" => MemoryBackendKind::Lucid,
         "postgres" => MemoryBackendKind::Postgres,
         "markdown" => MemoryBackendKind::Markdown,
+        "lancedb" => MemoryBackendKind::LanceDb,
         "none" => MemoryBackendKind::None,
         _ => MemoryBackendKind::Unknown,
     }
@@ -106,6 +117,7 @@ pub fn memory_backend_profile(backend: &str) -> MemoryBackendProfile {
         MemoryBackendKind::Postgres => POSTGRES_PROFILE,
         MemoryBackendKind::Markdown => MARKDOWN_PROFILE,
         MemoryBackendKind::None => NONE_PROFILE,
+        MemoryBackendKind::LanceDb => LANCEDB_PROFILE,
         MemoryBackendKind::Unknown => CUSTOM_PROFILE,
     }
 }

@@ -199,7 +199,7 @@ pub struct Config {
     #[serde(default)]
     pub hardware: HardwareConfig,
 
-    /// Voice transcription configuration (Whisper API via Groq).
+    /// Voice transcription configuration (Groq Whisper API or local SenseVoice).
     #[serde(default)]
     pub transcription: TranscriptionConfig,
 }
@@ -316,6 +316,10 @@ impl Default for HardwareConfig {
 
 // ── Transcription ────────────────────────────────────────────────
 
+fn default_transcription_provider() -> String {
+    "groq".into()
+}
+
 fn default_transcription_api_url() -> String {
     "https://api.groq.com/openai/v1/audio/transcriptions".into()
 }
@@ -328,12 +332,15 @@ fn default_transcription_max_duration_secs() -> u64 {
     120
 }
 
-/// Voice transcription configuration (Whisper API via Groq).
+/// Voice transcription configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TranscriptionConfig {
     /// Enable voice transcription for channels that support it.
     #[serde(default)]
     pub enabled: bool,
+    /// Transcription provider: "groq" (default, Whisper API) or "local" (sherpa-rs SenseVoice).
+    #[serde(default = "default_transcription_provider")]
+    pub provider: String,
     /// Whisper API endpoint URL.
     #[serde(default = "default_transcription_api_url")]
     pub api_url: String,
@@ -352,6 +359,7 @@ impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            provider: default_transcription_provider(),
             api_url: default_transcription_api_url(),
             model: default_transcription_model(),
             language: None,
@@ -1599,7 +1607,7 @@ impl Default for StorageProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MemoryConfig {
-    /// "sqlite" | "lucid" | "postgres" | "markdown" | "none" (`none` = explicit no-op memory)
+    /// "sqlite" | "lucid" | "postgres" | "markdown" | "lancedb" | "none" (`none` = explicit no-op memory)
     ///
     /// `postgres` requires `[storage.provider.config]` with `db_url` (`dbURL` alias supported).
     pub backend: String,
@@ -1617,7 +1625,7 @@ pub struct MemoryConfig {
     /// For sqlite backend: prune conversation rows older than this many days
     #[serde(default = "default_conversation_retention_days")]
     pub conversation_retention_days: u32,
-    /// Embedding provider: "none" | "openai" | "custom:URL"
+    /// Embedding provider: "none" | "openai" | "local" | "onnx" | "custom:URL"
     #[serde(default = "default_embedding_provider")]
     pub embedding_provider: String,
     /// Embedding model name (e.g. "text-embedding-3-small")

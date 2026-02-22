@@ -3,6 +3,9 @@ use reqwest::multipart::{Form, Part};
 
 use crate::config::TranscriptionConfig;
 
+#[cfg(feature = "local-transcription")]
+use std::sync::OnceLock;
+
 /// Maximum upload size accepted by the Groq Whisper API (25 MB).
 const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
@@ -31,6 +34,43 @@ fn normalize_audio_filename(file_name: &str) -> String {
     }
 }
 
+#[cfg(feature = "local-transcription")]
+static RECOGNIZER: OnceLock<std::sync::Mutex<sherpa_rs::sense_voice::SenseVoiceRecognizer>> =
+    OnceLock::new();
+
+#[cfg(feature = "local-transcription")]
+fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<String> {
+    let recognizer = RECOGNIZER.get_or_try_init(|| {
+        let model_dir = std::path::Path::new(&config.model);
+        let sv_config = sherpa_rs::sense_voice::SenseVoiceConfig {
+            model: model_dir.join("model.onnx").to_string_lossy().into(),
+            tokens: model_dir.join("tokens.txt").to_string_lossy().into(),
+            num_threads: 2,
+            use_vulkan: false,
+            debug: false,
+            ..Default::default()
+        };
+        sherpa_rs::sense_voice::SenseVoiceRecognizer::new(sv_config)
+            .map(std::sync::Mutex::new)
+            .map_err(|e| anyhow::anyhow!("Failed to init SenseVoice: {e}"))
+    })?;
+    let reader = hound::WavReader::new(std::io::Cursor::new(audio_data))
+        .context("Failed to read WAV audio")?;
+    let spec = reader.spec();
+    let samples: Vec<f32> = if spec.sample_format == hound::SampleFormat::Float {
+        reader.into_samples::<f32>().filter_map(|s| s.ok()).collect()
+    } else {
+        reader
+            .into_samples::<i16>()
+            .filter_map(|s| s.ok())
+            .map(|s| s as f32 / i16::MAX as f32)
+            .collect()
+    };
+    let mut rec = recognizer.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
+    let text = rec.recognize(spec.sample_rate as i32, &samples);
+    Ok(text.trim().to_string())
+}
+
 /// Transcribe audio bytes via a Whisper-compatible transcription API.
 ///
 /// Returns the transcribed text on success.  Requires `GROQ_API_KEY` in the
@@ -46,6 +86,17 @@ pub async fn transcribe_audio(
             "Audio file too large ({} bytes, max {MAX_AUDIO_BYTES})",
             audio_data.len()
         );
+    }
+
+    #[cfg(feature = "local-transcription")]
+    if config.provider == "local" {
+        return tokio::task::spawn_blocking({
+            let data = audio_data;
+            let cfg = config.clone();
+            move || transcribe_local(&data, &cfg)
+        })
+        .await
+        .context("Local transcription task panicked")?;
     }
 
     let normalized_name = normalize_audio_filename(file_name);
