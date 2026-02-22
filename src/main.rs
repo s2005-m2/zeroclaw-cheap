@@ -628,12 +628,10 @@ async fn main() -> Result<()> {
         model,
         memory,
     } = &cli.command
-    } = &cli.command
     {
         let interactive = *interactive;
         let force = *force;
         let channels_only = *channels_only;
-        let api_key = api_key.clone();
         let api_key = api_key.clone();
         let provider = provider.clone();
         let model = model.clone();
@@ -661,7 +659,6 @@ async fn main() -> Result<()> {
                 model.as_deref(),
                 memory.as_deref(),
                 force,
-            )
             )
             .await
         }?;

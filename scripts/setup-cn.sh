@@ -97,7 +97,7 @@ fi
 
 # ── Step 3: Write config via zeroclaw onboard ────────────────────────────────
 info "Generating base config via zeroclaw onboard..."
-zeroclaw onboard --provider qwen --memory lancedb --compact-context --force
+zeroclaw onboard --provider qwen --memory lancedb --force
 
 # Post-patch settings not covered by onboard flags
 CONFIG_FILE="$ZEROCLAW_HOME/config.toml"

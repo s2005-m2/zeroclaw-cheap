@@ -395,7 +395,6 @@ pub async fn run_quick_setup(
     model_override: Option<&str>,
     memory_backend: Option<&str>,
     force: bool,
-    compact_context: bool,
 ) -> Result<Config> {
     let home = directories::UserDirs::new()
         .map(|u| u.home_dir().to_path_buf())
@@ -407,7 +406,6 @@ pub async fn run_quick_setup(
         model_override,
         memory_backend,
         force,
-        compact_context,
         &home,
     )
     .await
@@ -442,9 +440,8 @@ async fn run_quick_setup_with_home(
     model_override: Option<&str>,
     memory_backend: Option<&str>,
     force: bool,
-    compact_context: bool,
     home: &Path,
-) -> Result<Config> {
+    ) -> Result<Config> {
     println!("{}", style(BANNER).cyan().bold());
     println!(
         "  {}",
