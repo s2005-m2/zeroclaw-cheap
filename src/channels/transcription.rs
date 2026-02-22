@@ -40,20 +40,20 @@ static RECOGNIZER: OnceLock<std::sync::Mutex<sherpa_rs::sense_voice::SenseVoiceR
 
 #[cfg(feature = "local-transcription")]
 fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<String> {
-    let recognizer = RECOGNIZER.get_or_try_init(|| {
+    let recognizer = RECOGNIZER.get_or_init(|| {
         let model_dir = std::path::Path::new(&config.model);
         let sv_config = sherpa_rs::sense_voice::SenseVoiceConfig {
             model: model_dir.join("model.onnx").to_string_lossy().into(),
             tokens: model_dir.join("tokens.txt").to_string_lossy().into(),
-            num_threads: 2,
-            use_vulkan: false,
+            num_threads: Some(2),
             debug: false,
             ..Default::default()
         };
-        sherpa_rs::sense_voice::SenseVoiceRecognizer::new(sv_config)
-            .map(std::sync::Mutex::new)
-            .map_err(|e| anyhow::anyhow!("Failed to init SenseVoice: {e}"))
-    })?;
+        std::sync::Mutex::new(
+            sherpa_rs::sense_voice::SenseVoiceRecognizer::new(sv_config)
+                .expect("Failed to init SenseVoice"),
+        )
+    });
     let reader = hound::WavReader::new(std::io::Cursor::new(audio_data))
         .context("Failed to read WAV audio")?;
     let spec = reader.spec();
@@ -67,8 +67,8 @@ fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<S
             .collect()
     };
     let mut rec = recognizer.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
-    let text = rec.recognize(spec.sample_rate as i32, &samples);
-    Ok(text.trim().to_string())
+    let result = rec.transcribe(spec.sample_rate, &samples);
+    Ok(result.text.trim().to_string())
 }
 
 /// Transcribe audio bytes via a Whisper-compatible transcription API.
