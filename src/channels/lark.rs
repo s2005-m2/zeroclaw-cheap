@@ -13,7 +13,7 @@ const FEISHU_BASE_URL: &str = "https://open.feishu.cn/open-apis";
 const FEISHU_WS_BASE_URL: &str = "https://open.feishu.cn";
 const LARK_BASE_URL: &str = "https://open.larksuite.com/open-apis";
 const LARK_WS_BASE_URL: &str = "https://open.larksuite.com";
-const ACK_REACTION_EMOJI_TYPE: &str = "SMILE";
+const ACK_REACTION_EMOJI_TYPE: &str = "MUSCLE";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Feishu WebSocket long-connection: pbbp2.proto frame codec
