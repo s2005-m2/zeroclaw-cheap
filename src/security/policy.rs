@@ -628,10 +628,12 @@ impl SecurityPolicy {
                 continue;
             }
 
-            if !self
-                .allowed_commands
-                .iter()
-                .any(|allowed| allowed == base_cmd)
+            let wildcard = self.allowed_commands.iter().any(|a| a == "*");
+            if !wildcard
+                && !self
+                    .allowed_commands
+                    .iter()
+                    .any(|allowed| allowed == base_cmd)
             {
                 return false;
             }
