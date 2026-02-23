@@ -16,7 +16,7 @@ use crate::jsonrpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
 /// MCP transport trait for async JSON-RPC communication
 #[async_trait]
-pub trait McpTransport: Send {
+pub trait McpTransport: Send + Sync {
     /// Send a JSON-RPC request
     async fn send(&mut self, request: &JsonRpcRequest) -> Result<()>;
 

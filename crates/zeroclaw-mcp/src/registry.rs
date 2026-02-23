@@ -13,8 +13,7 @@ use tracing::{debug, info};
 use crate::client::McpClient;
 use crate::config::McpServerConfig;
 use crate::transport::StdioTransport;
-use crate::types::McpToolCallResult;
-use crate::types::McpToolInfo;
+use crate::types::{McpPrompt, McpResource, McpToolCallResult, McpToolInfo};
 
 /// Internal state for a connected MCP server
 struct McpServerState {
@@ -299,6 +298,44 @@ impl McpRegistry {
                     tool_name, server_name
                 )
             })
+    }
+
+    /// Get all resources from all connected servers
+    pub async fn get_all_resources(&self) -> Vec<(String, McpResource)> {
+        let mut servers = self.servers.write().await;
+        let mut all_resources = Vec::new();
+        for (server_name, state) in servers.iter_mut() {
+            match state.client.list_resources().await {
+                Ok(resources) => {
+                    for resource in resources {
+                        all_resources.push((server_name.clone(), resource));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to list resources from MCP server '{}': {}", server_name, e);
+                }
+            }
+        }
+        all_resources
+    }
+
+    /// Get all prompts from all connected servers
+    pub async fn get_all_prompts(&self) -> Vec<(String, McpPrompt)> {
+        let mut servers = self.servers.write().await;
+        let mut all_prompts = Vec::new();
+        for (server_name, state) in servers.iter_mut() {
+            match state.client.list_prompts().await {
+                Ok(prompts) => {
+                    for prompt in prompts {
+                        all_prompts.push((server_name.clone(), prompt));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to list prompts from MCP server '{}': {}", server_name, e);
+                }
+            }
+        }
+        all_prompts
     }
 
     /// Get the number of connected servers

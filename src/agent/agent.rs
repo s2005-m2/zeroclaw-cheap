@@ -35,6 +35,7 @@ pub struct Agent {
     history: Vec<ConversationMessage>,
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
+    mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
 }
 
 pub struct AgentBuilder {
@@ -55,6 +56,7 @@ pub struct AgentBuilder {
     auto_save: Option<bool>,
     classification_config: Option<crate::config::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
+    mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
 }
 
 impl AgentBuilder {
@@ -77,6 +79,7 @@ impl AgentBuilder {
             auto_save: None,
             classification_config: None,
             available_hints: None,
+            mcp_registry: None,
         }
     }
 
@@ -171,6 +174,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn mcp_registry(mut self, registry: Arc<zeroclaw_mcp::registry::McpRegistry>) -> Self {
+        self.mcp_registry = Some(registry);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -213,6 +221,7 @@ impl AgentBuilder {
             history: Vec::new(),
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
+            mcp_registry: self.mcp_registry,
         })
     }
 }
@@ -435,6 +444,52 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        // Snapshot MCP tools if registry is present
+        if let Some(ref registry) = self.mcp_registry {
+            // Remove previous MCP bridge tools (names start with "mcp_")
+            self.tools.retain(|t| !t.name().starts_with("mcp_"));
+
+            let mcp_tools = registry.get_all_tools().await;
+            let bridge_tools: Vec<Box<dyn Tool>> = mcp_tools
+                .into_iter()
+                .map(|(server_name, tool_info)| {
+                    Box::new(crate::tools::McpBridgeTool::new(
+                        server_name,
+                        tool_info,
+                        Arc::clone(registry),
+                    )) as Box<dyn Tool>
+                })
+                .collect();
+            self.tools.extend(bridge_tools);
+            self.tool_specs = self.tools.iter().map(|t| t.spec()).collect();
+
+            // Inject MCP resources and prompts into system prompt
+            let resources = registry.get_all_resources().await;
+            let prompts = registry.get_all_prompts().await;
+            if !resources.is_empty() || !prompts.is_empty() {
+                let mut mcp_context = String::new();
+                if !resources.is_empty() {
+                    mcp_context.push_str("\n[MCP Resources]\n");
+                    for (server, res) in &resources {
+                        let desc = res.description.as_deref().unwrap_or("");
+                        mcp_context.push_str(&format!("  {}: {} — {}\n", server, res.uri, desc));
+                    }
+                }
+                if !prompts.is_empty() {
+                    mcp_context.push_str("\n[MCP Prompts]\n");
+                    for (server, prompt) in &prompts {
+                        let desc = prompt.description.as_deref().unwrap_or("");
+                        mcp_context.push_str(&format!("  {}: {} — {}\n", server, prompt.name, desc));
+                    }
+                }
+                if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {
+                    if sys_msg.role == "system" {
+                        sys_msg.content.push_str(&mcp_context);
+                    }
+                }
+            }
+        }
+
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
