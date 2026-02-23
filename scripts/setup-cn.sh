@@ -164,9 +164,18 @@ fi
 # Playwright Chromium under the hood.  Use China npm/Playwright mirrors.
 if [[ "$SKIP_BROWSER" == false ]]; then
   if ! command -v node &>/dev/null; then
-    info "Node.js not found — installing via China mirror..."
-    curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/nodesource/setup_lts.x | sudo -E bash -
-    sudo apt-get install -y nodejs || err "Failed to install Node.js"
+    info "Node.js not found — installing via npmmirror..."
+    NODE_MIRROR="https://registry.npmmirror.com/-/binary/node"
+    NODE_VERSION="22.20.0"
+    NODE_ARCH=$(uname -m)
+    case "$NODE_ARCH" in aarch64) NODE_ARCH=arm64 ;; x86_64) NODE_ARCH=x64 ;; armv7l) NODE_ARCH=armv7l ;; *) err "Unsupported arch: $NODE_ARCH" ;; esac
+    NODE_TAR="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+    info "Downloading Node.js v${NODE_VERSION} (${NODE_ARCH})..."
+    curl -fSL --retry 3 --connect-timeout 30 -o "/tmp/$NODE_TAR" "$NODE_MIRROR/v${NODE_VERSION}/$NODE_TAR" \
+      || err "Failed to download Node.js v${NODE_VERSION}"
+    sudo tar -xJf "/tmp/$NODE_TAR" -C /usr/local --strip-components=1
+    rm -f "/tmp/$NODE_TAR"
+    command -v node &>/dev/null || err "Node.js installation failed"
   fi
 
   info "Installing agent-browser via China npm mirror ($NPM_MIRROR)..."
