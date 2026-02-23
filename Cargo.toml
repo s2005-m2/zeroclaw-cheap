@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/robot-kit"]
+members = [".", "crates/robot-kit", "crates/zeroclaw-mcp"]
 resolver = "2"
 
 [package]
@@ -86,6 +86,9 @@ parking_lot = "0.12"
 
 # Async traits
 async-trait = "0.1"
+
+# MCP (Model Context Protocol)
+zeroclaw-mcp = { path = "crates/zeroclaw-mcp" }
 
 # HMAC-SHA256 (Zhipu/GLM JWT auth)
 ring = "0.17"
