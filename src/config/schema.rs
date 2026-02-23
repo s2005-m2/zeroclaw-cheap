@@ -202,6 +202,10 @@ pub struct Config {
     /// Voice transcription configuration (Groq Whisper API or local SenseVoice).
     #[serde(default)]
     pub transcription: TranscriptionConfig,
+
+    /// MCP (Model Context Protocol) configuration (`[mcp]`).
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 // ── Delegate Agents ──────────────────────────────────────────────
@@ -364,6 +368,36 @@ impl Default for TranscriptionConfig {
             model: default_transcription_model(),
             language: None,
             max_duration_secs: default_transcription_max_duration_secs(),
+        }
+    }
+}
+
+// ── MCP (Model Context Protocol) ─────────────────────────────────
+
+/// MCP (Model Context Protocol) configuration (`[mcp]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct McpConfig {
+    /// Enable MCP support. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum number of MCP tools across all servers. Default: 50.
+    #[serde(default = "default_mcp_tool_cap")]
+    pub tool_cap: usize,
+    /// Path to .mcp.json config file. Default: ".mcp.json" (relative to workspace).
+    #[serde(default)]
+    pub config_path: Option<String>,
+}
+
+fn default_mcp_tool_cap() -> usize {
+    50
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tool_cap: 50,
+            config_path: None,
         }
     }
 }
@@ -3305,6 +3339,7 @@ impl Default for Config {
             hardware: HardwareConfig::default(),
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }

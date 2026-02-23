@@ -283,6 +283,38 @@ impl Agent {
             config,
         );
 
+        // Wire MCP if enabled
+        let mcp_registry = if config.mcp.enabled {
+            let config_path = config.mcp.config_path.as_deref().unwrap_or(".mcp.json");
+            let mcp_json_path = config.workspace_dir.join(config_path);
+
+            if mcp_json_path.exists() {
+                let builtin_names: std::collections::HashSet<String> =
+                    tools.iter().map(|t| t.name().to_string()).collect();
+                let registry = Arc::new(
+                    zeroclaw_mcp::registry::McpRegistry::new(config.mcp.tool_cap, builtin_names)
+                );
+
+                // Log configured servers (actual connection happens lazily or via mcp_manage tool)
+                match zeroclaw_mcp::config::load_mcp_configs(Some(&mcp_json_path)) {
+                    Ok(configs) => {
+                        for server_config in configs {
+                            tracing::info!("MCP: server '{}' configured (connect on first use)", server_config.name);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load MCP config from {:?}: {}", mcp_json_path, e);
+                    }
+                }
+                Some(registry)
+            } else {
+                tracing::debug!("No .mcp.json found at {:?}, MCP disabled", mcp_json_path);
+                None
+            }
+        } else {
+            None
+        };
+
         let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
 
         let model_name = config
@@ -311,7 +343,7 @@ impl Agent {
         let available_hints: Vec<String> =
             config.model_routes.iter().map(|r| r.hint.clone()).collect();
 
-        Agent::builder()
+        let mut builder = Agent::builder()
             .provider(provider)
             .tools(tools)
             .memory(memory)
@@ -334,8 +366,13 @@ impl Agent {
                 config,
             ))
             .skills_prompt_mode(config.skills.prompt_injection_mode)
-            .auto_save(config.memory.auto_save)
-            .build()
+            .auto_save(config.memory.auto_save);
+
+        if let Some(registry) = mcp_registry {
+            builder = builder.mcp_registry(registry);
+        }
+
+        builder.build()
     }
 
     fn trim_history(&mut self) {
