@@ -291,15 +291,19 @@ impl Agent {
             if mcp_json_path.exists() {
                 let builtin_names: std::collections::HashSet<String> =
                     tools.iter().map(|t| t.name().to_string()).collect();
-                let registry = Arc::new(
-                    zeroclaw_mcp::registry::McpRegistry::new(config.mcp.tool_cap, builtin_names)
-                );
+                let registry = Arc::new(zeroclaw_mcp::registry::McpRegistry::new(
+                    config.mcp.tool_cap,
+                    builtin_names,
+                ));
 
                 // Log configured servers (actual connection happens lazily or via mcp_manage tool)
                 match zeroclaw_mcp::config::load_mcp_configs(Some(&mcp_json_path)) {
                     Ok(configs) => {
                         for server_config in configs {
-                            tracing::info!("MCP: server '{}' configured (connect on first use)", server_config.name);
+                            tracing::info!(
+                                "MCP: server '{}' configured (connect on first use)",
+                                server_config.name
+                            );
                         }
                     }
                     Err(e) => {
@@ -516,7 +520,8 @@ impl Agent {
                     mcp_context.push_str("\n[MCP Prompts]\n");
                     for (server, prompt) in &prompts {
                         let desc = prompt.description.as_deref().unwrap_or("");
-                        mcp_context.push_str(&format!("  {}: {} — {}\n", server, prompt.name, desc));
+                        mcp_context
+                            .push_str(&format!("  {}: {} — {}\n", server, prompt.name, desc));
                     }
                 }
                 if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {

@@ -19,6 +19,7 @@ use crate::types::{McpPrompt, McpResource, McpToolCallResult, McpToolInfo};
 struct McpServerState {
     client: McpClient,
     tools: Vec<McpToolInfo>,
+    #[allow(dead_code)]
     config: McpServerConfig,
 }
 
@@ -59,15 +60,13 @@ impl McpRegistry {
 
         info!("Adding MCP server: {}", server_name);
 
-
-        let mut transport = StdioTransport::new(&config.command, &config.args, &config.env)
+        let transport = StdioTransport::new(&config.command, &config.args, &config.env)
             .await
             .with_context(|| format!("Failed to spawn MCP server '{}'", server_name))?;
 
         let mut client = McpClient::connect(Box::new(transport))
             .await
             .with_context(|| format!("Failed to connect to MCP server '{}'", server_name))?;
-
 
         let tools = client
             .list_tools()
@@ -80,15 +79,12 @@ impl McpRegistry {
             tools.len()
         );
 
-
         self.validate_tools(&tools, &server_name).await?;
-
 
         {
             let servers = self.servers.read().await;
             let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
             if current_tool_count + tools.len() > self.tool_cap {
-
                 let _ = client.close().await;
                 anyhow::bail!(
                     "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
@@ -100,7 +96,6 @@ impl McpRegistry {
                 );
             }
         }
-
 
         let mut servers = self.servers.write().await;
         servers.insert(
@@ -128,7 +123,6 @@ impl McpRegistry {
         mut client: McpClient,
         config: McpServerConfig,
     ) -> Result<Vec<McpToolInfo>> {
-
         let tools = client
             .list_tools()
             .await
@@ -136,9 +130,7 @@ impl McpRegistry {
 
         debug!("MCP server '{}' advertised {} tools", name, tools.len());
 
-
         self.validate_tools(&tools, &name).await?;
-
 
         {
             let servers = self.servers.read().await;
@@ -155,7 +147,6 @@ impl McpRegistry {
                 );
             }
         }
-
 
         let mut servers = self.servers.write().await;
         servers.insert(
@@ -221,7 +212,6 @@ impl McpRegistry {
         let mut server = servers
             .remove(name)
             .with_context(|| format!("MCP server '{}' not found", name))?;
-
 
         server
             .client
@@ -312,7 +302,11 @@ impl McpRegistry {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to list resources from MCP server '{}': {}", server_name, e);
+                    tracing::warn!(
+                        "Failed to list resources from MCP server '{}': {}",
+                        server_name,
+                        e
+                    );
                 }
             }
         }
@@ -331,7 +325,11 @@ impl McpRegistry {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to list prompts from MCP server '{}': {}", server_name, e);
+                    tracing::warn!(
+                        "Failed to list prompts from MCP server '{}': {}",
+                        server_name,
+                        e
+                    );
                 }
             }
         }
@@ -442,7 +440,7 @@ mod tests {
             "inputSchema": {"type": "object"}
         })];
 
-        let mut client = create_mock_client(create_tools_response(tools_json)).await;
+        let client = create_mock_client(create_tools_response(tools_json)).await;
 
         let config = McpServerConfig {
             name: "test_server".to_string(),
@@ -451,7 +449,6 @@ mod tests {
             env: HashMap::new(),
         };
 
-
         let tools = registry
             .add_server_with_client("test_server".to_string(), client, config)
             .await
@@ -459,7 +456,6 @@ mod tests {
 
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "test_tool");
-
 
         let servers = registry.list_servers().await;
         assert_eq!(servers.len(), 1);
@@ -477,7 +473,7 @@ mod tests {
             "inputSchema": {"type": "object"}
         })];
 
-        let mut client = create_mock_client(create_tools_response(tools_json)).await;
+        let client = create_mock_client(create_tools_response(tools_json)).await;
 
         let config = McpServerConfig {
             name: "test_server".to_string(),
@@ -491,12 +487,10 @@ mod tests {
             .await
             .unwrap();
 
-
         assert_eq!(registry.list_servers().await.len(), 1);
 
         // Remove server
         registry.remove_server("test_server").await.unwrap();
-
 
         assert!(registry.list_servers().await.is_empty());
     }
@@ -504,7 +498,6 @@ mod tests {
     #[tokio::test]
     async fn test_list_servers() {
         let registry = McpRegistry::new(50, HashSet::new());
-
 
         let tools_json1 = vec![json!({
             "name": "tool1",
@@ -522,7 +515,6 @@ mod tests {
             .add_server_with_client("server1".to_string(), client1, config1)
             .await
             .unwrap();
-
 
         let tools_json2 = vec![
             json!({
@@ -548,14 +540,12 @@ mod tests {
             .await
             .unwrap();
 
-
         let servers = registry.list_servers().await;
         assert_eq!(servers.len(), 2);
 
         let server_names: HashSet<_> = servers.iter().map(|(n, _)| n.as_str()).collect();
         assert!(server_names.contains("server1"));
         assert!(server_names.contains("server2"));
-
 
         let server1_tools = servers.iter().find(|(n, _)| n == "server1").unwrap().1;
         let server2_tools = servers.iter().find(|(n, _)| n == "server2").unwrap().1;
@@ -570,14 +560,13 @@ mod tests {
 
         let registry = McpRegistry::new(50, builtin_tools);
 
-
         let tools_json = vec![json!({
             "name": "shell",
             "description": "Shell tool",
             "inputSchema": {"type": "object"}
         })];
 
-        let mut client = create_mock_client(create_tools_response(tools_json)).await;
+        let client = create_mock_client(create_tools_response(tools_json)).await;
 
         let config = McpServerConfig {
             name: "bad_server".to_string(),
@@ -595,15 +584,12 @@ mod tests {
         assert!(err_msg.contains("collides with builtin tool name"));
         assert!(err_msg.contains("shell"));
 
-
         assert!(registry.list_servers().await.is_empty());
     }
 
     #[tokio::test]
     async fn test_tool_cap_enforced() {
-
         let registry = McpRegistry::new(2, HashSet::new());
-
 
         let tools_json = vec![
             json!({
@@ -623,7 +609,7 @@ mod tests {
             }),
         ];
 
-        let mut client = create_mock_client(create_tools_response(tools_json)).await;
+        let client = create_mock_client(create_tools_response(tools_json)).await;
 
         let config = McpServerConfig {
             name: "big_server".to_string(),
@@ -641,14 +627,12 @@ mod tests {
         assert!(err_msg.contains("exceed tool cap"));
         assert!(err_msg.contains("Cap: 2"));
 
-
         assert!(registry.list_servers().await.is_empty());
     }
 
     #[tokio::test]
     async fn test_get_all_tools() {
         let registry = McpRegistry::new(50, HashSet::new());
-
 
         let tools_json1 = vec![json!({
             "name": "tool_a",
@@ -666,7 +650,6 @@ mod tests {
             .add_server_with_client("server_a".to_string(), client1, config1)
             .await
             .unwrap();
-
 
         let tools_json2 = vec![
             json!({
@@ -692,16 +675,13 @@ mod tests {
             .await
             .unwrap();
 
-
         let all_tools = registry.get_all_tools().await;
         assert_eq!(all_tools.len(), 3);
-
 
         let tool_names: HashSet<_> = all_tools.iter().map(|(_, t)| t.name.as_str()).collect();
         assert!(tool_names.contains("tool_a"));
         assert!(tool_names.contains("tool_b"));
         assert!(tool_names.contains("tool_c"));
-
 
         let server_a_tools: Vec<_> = all_tools.iter().filter(|(s, _)| s == "server_a").collect();
         let server_b_tools: Vec<_> = all_tools.iter().filter(|(s, _)| s == "server_b").collect();

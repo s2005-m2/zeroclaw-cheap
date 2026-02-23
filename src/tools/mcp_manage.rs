@@ -94,9 +94,7 @@ impl Tool for McpManageTool {
                     return Ok(ToolResult {
                         success: false,
                         output: String::new(),
-                        error: Some(
-                            "MCP server addition requires Full autonomy level".to_string(),
-                        ),
+                        error: Some("MCP server addition requires Full autonomy level".to_string()),
                     });
                 }
                 let name = args["name"]
@@ -107,7 +105,11 @@ impl Tool for McpManageTool {
                     .ok_or_else(|| anyhow::anyhow!("'command' is required for add"))?;
                 let cmd_args: Vec<String> = args["args"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let env: HashMap<String, String> = args["env"]
                     .as_object()
@@ -127,11 +129,7 @@ impl Tool for McpManageTool {
                 let tools = self.registry.add_server(config).await?;
                 Ok(ToolResult {
                     success: true,
-                    output: format!(
-                        "Added MCP server '{}' with {} tools",
-                        name,
-                        tools.len()
-                    ),
+                    output: format!("Added MCP server '{}' with {} tools", name, tools.len()),
                     error: None,
                 })
             }

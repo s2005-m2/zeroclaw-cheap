@@ -192,7 +192,9 @@ pub fn create_embedding_provider(
             match super::onnx_embedding::OnnxEmbeddingProvider::new_with_dims(model_path, dims) {
                 Ok(p) => Box::new(p),
                 Err(e) => {
-                    tracing::warn!("Failed to load local ONNX embedding model: {e}, falling back to noop");
+                    tracing::warn!(
+                        "Failed to load local ONNX embedding model: {e}, falling back to noop"
+                    );
                     Box::new(NoopEmbedding)
                 }
             }

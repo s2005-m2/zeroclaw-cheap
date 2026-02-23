@@ -442,7 +442,7 @@ async fn run_quick_setup_with_home(
     memory_backend: Option<&str>,
     force: bool,
     home: &Path,
-    ) -> Result<Config> {
+) -> Result<Config> {
     println!("{}", style(BANNER).cyan().bold());
     println!(
         "  {}",

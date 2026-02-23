@@ -239,10 +239,7 @@ mod tests {
                 &env,
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "Failed to spawn powershell process"
-            );
+            assert!(result.is_ok(), "Failed to spawn powershell process");
 
             let mut transport = result.unwrap();
             let close_result = transport.close().await;

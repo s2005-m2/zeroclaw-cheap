@@ -36,6 +36,8 @@ pub mod hardware_memory_map;
 pub mod hardware_memory_read;
 pub mod http_request;
 pub mod image_info;
+pub mod mcp_bridge;
+pub mod mcp_manage;
 pub mod memory_forget;
 pub mod memory_recall;
 pub mod memory_store;
@@ -48,8 +50,6 @@ pub mod screenshot;
 pub mod shell;
 pub mod traits;
 pub mod web_search_tool;
-pub mod mcp_bridge;
-pub mod mcp_manage;
 
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
@@ -71,6 +71,8 @@ pub use hardware_memory_map::HardwareMemoryMapTool;
 pub use hardware_memory_read::HardwareMemoryReadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
+pub use mcp_bridge::McpBridgeTool;
+pub use mcp_manage::McpManageTool;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_recall::MemoryRecallTool;
 pub use memory_store::MemoryStoreTool;
@@ -86,8 +88,6 @@ pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
 pub use web_search_tool::WebSearchTool;
-pub use mcp_bridge::McpBridgeTool;
-pub use mcp_manage::McpManageTool;
 
 use crate::config::{Config, DelegateAgentConfig};
 use crate::memory::Memory;
