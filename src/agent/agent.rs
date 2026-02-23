@@ -615,6 +615,7 @@ impl Agent {
             self.history.push(ConversationMessage::AssistantToolCalls {
                 text: response.text.clone(),
                 tool_calls: response.tool_calls.clone(),
+                reasoning_content: response.reasoning_content.clone(),
             });
 
             let results = self.execute_tools(&calls).await;
@@ -748,6 +749,7 @@ mod tests {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
+                    reasoning_content: None,
                 });
             }
             Ok(guard.remove(0))
@@ -786,6 +788,7 @@ mod tests {
                 text: Some("hello".into()),
                 tool_calls: vec![],
                 usage: None,
+                reasoning_content: None,
             }]),
         });
 
@@ -825,11 +828,13 @@ mod tests {
                         arguments: "{}".into(),
                     }],
                     usage: None,
+                    reasoning_content: None,
                 },
                 crate::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
+                    reasoning_content: None,
                 },
             ]),
         });
