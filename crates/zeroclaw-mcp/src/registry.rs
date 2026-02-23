@@ -122,7 +122,7 @@ impl McpRegistry {
     }
 
     /// Internal method to add a server with a pre-connected client (for testing)
-    pub(crate) async fn add_server_with_client(
+    pub async fn add_server_with_client(
         &self,
         name: String,
         mut client: McpClient,

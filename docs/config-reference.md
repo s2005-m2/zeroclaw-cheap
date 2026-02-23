@@ -173,6 +173,27 @@ Notes:
 - Typical flow: call `connect`, complete browser OAuth, then run `execute` for the desired tool action.
 - If Composio returns a missing connected-account reference error, call `list_accounts` (optionally with `app`) and pass the returned `connected_account_id` to `execute`.
 
+
+## `[mcp]`
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `enabled` | `false` | Enable MCP (Model Context Protocol) support |
+| `tool_cap` | `50` | Maximum number of MCP tools across all servers |
+| `config_path` | `".mcp.json"` | Path to `.mcp.json` config file (relative to workspace) |
+
+Notes:
+- Tools from MCP servers are namespaced as `mcp_{server}_{tool}` to avoid collisions.
+- Adding servers at runtime via `mcp_manage` tool requires `AutonomyLevel::Full`.
+- Only stdio transport is supported.
+
+```toml
+[mcp]
+enabled = true
+tool_cap = 50
+config_path = ".mcp.json"
+```
+
 ## `[cost]`
 
 | Key | Default | Purpose |

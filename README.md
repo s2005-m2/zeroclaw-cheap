@@ -411,6 +411,7 @@ Every subsystem is a **trait** — swap implementations with a config change, ze
 | **Heartbeat** | Engine | HEARTBEAT.md periodic tasks | — |
 | **Skills** | Loader | TOML manifests + SKILL.md instructions | Community skill packs |
 | **Integrations** | Registry | 70+ integrations across 9 categories | Plugin system |
+| **MCP** | — | .mcp.json config, mcp_manage tool, stdio transport | Any MCP-compatible server |
 
 ### Runtime support (current)
 
