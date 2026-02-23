@@ -16,6 +16,7 @@ const TELEGRAM_MAX_MESSAGE_LENGTH: usize = 4096;
 /// Reserve space for continuation markers added by send_text_chunks:
 /// worst case is "(continued)\n\n" + chunk + "\n\n(continues...)" = 30 extra chars
 const TELEGRAM_CONTINUATION_OVERHEAD: usize = 30;
+const TELEGRAM_ACK_REACTIONS: &[&str] = &["⚡️", "🦀", "🙌", "💪", "👌", "👀", "👣"];
 
 /// Metadata for an incoming document or photo attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +92,38 @@ fn split_message_for_telegram(message: &str) -> Vec<String> {
     chunks
 }
 
+fn pick_uniform_index(len: usize) -> usize {
+    debug_assert!(len > 0);
+    let upper = len as u64;
+    let reject_threshold = (u64::MAX / upper) * upper;
+
+    loop {
+        let value = rand::random::<u64>();
+        if value < reject_threshold {
+            return (value % upper) as usize;
+        }
+    }
+}
+
+fn random_telegram_ack_reaction() -> &'static str {
+    TELEGRAM_ACK_REACTIONS[pick_uniform_index(TELEGRAM_ACK_REACTIONS.len())]
+}
+
+fn build_telegram_ack_reaction_request(
+    chat_id: &str,
+    message_id: i64,
+    emoji: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reaction": [{
+            "type": "emoji",
+            "emoji": emoji
+        }]
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TelegramAttachmentKind {
     Image,
@@ -115,6 +148,40 @@ impl TelegramAttachmentKind {
             "AUDIO" => Some(Self::Audio),
             "VOICE" => Some(Self::Voice),
             _ => None,
+        }
+    }
+}
+
+/// Check whether a file path has a recognized image extension.
+fn is_image_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Build the user-facing content string for an incoming attachment.
+///
+/// Photos with a recognized image extension use `[IMAGE:/path]` so the
+/// multimodal pipeline can validate vision capability. Non-image files
+/// always use `[Document: name] /path` regardless of how Telegram
+/// classified them.
+fn format_attachment_content(
+    kind: IncomingAttachmentKind,
+    local_filename: &str,
+    local_path: &Path,
+) -> String {
+    match kind {
+        IncomingAttachmentKind::Photo if is_image_extension(local_path) => {
+            format!("[IMAGE:{}]", local_path.display())
+        }
+        _ => {
+            format!("[Document: {}] {}", local_filename, local_path.display())
         }
     }
 }
@@ -317,6 +384,46 @@ impl TelegramChannel {
         } else {
             (reply_target.to_string(), None)
         }
+    }
+
+    fn extract_update_message_target(update: &serde_json::Value) -> Option<(String, i64)> {
+        let message = update.get("message")?;
+        let chat_id = message
+            .get("chat")
+            .and_then(|chat| chat.get("id"))
+            .and_then(serde_json::Value::as_i64)?
+            .to_string();
+        let message_id = message
+            .get("message_id")
+            .and_then(serde_json::Value::as_i64)?;
+        Some((chat_id, message_id))
+    }
+
+    fn try_add_ack_reaction_nonblocking(&self, chat_id: String, message_id: i64) {
+        let client = self.http_client();
+        let url = self.api_url("setMessageReaction");
+        let emoji = random_telegram_ack_reaction().to_string();
+        let body = build_telegram_ack_reaction_request(&chat_id, message_id, &emoji);
+
+        tokio::spawn(async move {
+            let response = match client.post(&url).json(&body).send().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    tracing::warn!(
+                        "Telegram: failed to add ACK reaction to chat_id={chat_id}, message_id={message_id}: {err}"
+                    );
+                    return;
+                }
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let err_body = response.text().await.unwrap_or_default();
+                tracing::warn!(
+                    "Telegram: add ACK reaction failed for chat_id={chat_id}, message_id={message_id}: status={status}, body={err_body}"
+                );
+            }
+        });
     }
 
     fn http_client(&self) -> reqwest::Client {
@@ -898,16 +1005,10 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         }
 
         // Build message content.
-        // Photos use [IMAGE:] marker so the multimodal pipeline validates
-        // vision capability and rejects unsupported providers early.
-        let mut content = match attachment.kind {
-            IncomingAttachmentKind::Document => {
-                format!("[Document: {}] {}", local_filename, local_path.display())
-            }
-            IncomingAttachmentKind::Photo => {
-                format!("[IMAGE:{}]", local_path.display())
-            }
-        };
+        // Photos with image extensions use [IMAGE:] marker so the multimodal
+        // pipeline validates vision capability. Non-image files always get
+        // [Document:] format regardless of Telegram's classification.
+        let mut content = format_attachment_content(attachment.kind, &local_filename, &local_path);
         if let Some(caption) = &attachment.caption {
             if !caption.is_empty() {
                 use std::fmt::Write;
@@ -2394,6 +2495,15 @@ Ensure only one `zeroclaw` process is using this bot token."
                         continue;
                     };
 
+                    if let Some((reaction_chat_id, reaction_message_id)) =
+                        Self::extract_update_message_target(update)
+                    {
+                        self.try_add_ack_reaction_nonblocking(
+                            reaction_chat_id,
+                            reaction_message_id,
+                        );
+                    }
+
                     // Send "typing" indicator immediately when we receive a message
                     let typing_body = serde_json::json!({
                         "chat_id": &msg.reply_target,
@@ -2477,6 +2587,37 @@ mod tests {
     fn telegram_channel_name() {
         let ch = TelegramChannel::new("fake-token".into(), vec!["*".into()], false);
         assert_eq!(ch.name(), "telegram");
+    }
+
+    #[test]
+    fn random_telegram_ack_reaction_is_from_pool() {
+        for _ in 0..128 {
+            let emoji = random_telegram_ack_reaction();
+            assert!(TELEGRAM_ACK_REACTIONS.contains(&emoji));
+        }
+    }
+
+    #[test]
+    fn telegram_ack_reaction_request_shape() {
+        let body = build_telegram_ack_reaction_request("-100200300", 42, "⚡️");
+        assert_eq!(body["chat_id"], "-100200300");
+        assert_eq!(body["message_id"], 42);
+        assert_eq!(body["reaction"][0]["type"], "emoji");
+        assert_eq!(body["reaction"][0]["emoji"], "⚡️");
+    }
+
+    #[test]
+    fn telegram_extract_update_message_target_parses_ids() {
+        let update = serde_json::json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 99,
+                "chat": { "id": -100123456 }
+            }
+        });
+
+        let target = TelegramChannel::extract_update_message_target(&update);
+        assert_eq!(target, Some(("-100123456".to_string(), 99)));
     }
 
     #[test]
@@ -3999,29 +4140,15 @@ mod tests {
 
     // ── Attachment content format tests ──────────────────────────────
 
-    /// Photo attachments must use `[IMAGE:/path]` marker so the multimodal
-    /// pipeline validates vision capability on the provider.
+    /// Photo attachments with image extension must use `[IMAGE:/path]` marker
+    /// so the multimodal pipeline validates vision capability on the provider.
     #[test]
     fn attachment_photo_content_uses_image_marker() {
-        let att = IncomingAttachment {
-            file_id: "photo_file_id".into(),
-            file_name: None,
-            file_size: Some(5000),
-            caption: None,
-            kind: IncomingAttachmentKind::Photo,
-        };
-
         let local_path = std::path::Path::new("/tmp/workspace/photo_123_45.jpg");
         let local_filename = "photo_123_45.jpg";
 
-        let content = match att.kind {
-            IncomingAttachmentKind::Document => {
-                format!("[Document: {}] {}", local_filename, local_path.display())
-            }
-            IncomingAttachmentKind::Photo => {
-                format!("[IMAGE:{}]", local_path.display())
-            }
-        };
+        let content =
+            format_attachment_content(IncomingAttachmentKind::Photo, local_filename, local_path);
 
         assert_eq!(content, "[IMAGE:/tmp/workspace/photo_123_45.jpg]");
         assert!(content.starts_with("[IMAGE:"));
@@ -4031,28 +4158,113 @@ mod tests {
     /// Document attachments keep `[Document: name] /path` format.
     #[test]
     fn attachment_document_content_uses_document_label() {
-        let att = IncomingAttachment {
-            file_id: "doc_file_id".into(),
-            file_name: Some("report.pdf".into()),
-            file_size: Some(12345),
-            caption: None,
-            kind: IncomingAttachmentKind::Document,
-        };
-
         let local_path = std::path::Path::new("/tmp/workspace/report.pdf");
-        let local_filename = att.file_name.as_deref().unwrap();
+        let local_filename = "report.pdf";
 
-        let content = match att.kind {
-            IncomingAttachmentKind::Document => {
-                format!("[Document: {}] {}", local_filename, local_path.display())
-            }
-            IncomingAttachmentKind::Photo => {
-                format!("[IMAGE:{}]", local_path.display())
-            }
-        };
+        let content =
+            format_attachment_content(IncomingAttachmentKind::Document, local_filename, local_path);
 
         assert_eq!(content, "[Document: report.pdf] /tmp/workspace/report.pdf");
         assert!(!content.contains("[IMAGE:"));
+    }
+
+    /// Markdown files must never produce `[IMAGE:]` markers (issue #1274).
+    #[test]
+    fn markdown_file_never_produces_image_marker() {
+        let local_path = std::path::Path::new("/tmp/workspace/telegram_files/notes.md");
+        let local_filename = "notes.md";
+
+        // Even if Telegram misclassifies as Photo, extension guard prevents [IMAGE:].
+        let content =
+            format_attachment_content(IncomingAttachmentKind::Photo, local_filename, local_path);
+        assert!(
+            !content.contains("[IMAGE:"),
+            "markdown must not get [IMAGE:] marker: {content}"
+        );
+        assert!(content.starts_with("[Document:"));
+
+        // As Document, it should also be correct.
+        let content_doc =
+            format_attachment_content(IncomingAttachmentKind::Document, local_filename, local_path);
+        assert!(
+            !content_doc.contains("[IMAGE:"),
+            "markdown document must not get [IMAGE:] marker: {content_doc}"
+        );
+    }
+
+    /// Non-image files classified as Photo fall back to `[Document:]` format.
+    #[test]
+    fn non_image_photo_falls_back_to_document_format() {
+        for (filename, ext_path) in [
+            ("file.md", "/tmp/ws/file.md"),
+            ("file.txt", "/tmp/ws/file.txt"),
+            ("file.pdf", "/tmp/ws/file.pdf"),
+            ("file.csv", "/tmp/ws/file.csv"),
+            ("file.json", "/tmp/ws/file.json"),
+            ("file.zip", "/tmp/ws/file.zip"),
+            ("file", "/tmp/ws/file"),
+        ] {
+            let path = std::path::Path::new(ext_path);
+            let content = format_attachment_content(IncomingAttachmentKind::Photo, filename, path);
+            assert!(
+                !content.contains("[IMAGE:"),
+                "{filename}: non-image file should not get [IMAGE:] marker, got: {content}"
+            );
+            assert!(
+                content.starts_with("[Document:"),
+                "{filename}: should use [Document:] format, got: {content}"
+            );
+        }
+    }
+
+    /// All recognized image extensions produce `[IMAGE:]` when classified as Photo.
+    #[test]
+    fn image_extensions_produce_image_marker() {
+        for ext in ["png", "jpg", "jpeg", "gif", "webp", "bmp"] {
+            let filename = format!("photo_1_2.{ext}");
+            let path_str = format!("/tmp/ws/{filename}");
+            let path = std::path::Path::new(&path_str);
+            let content = format_attachment_content(IncomingAttachmentKind::Photo, &filename, path);
+            assert!(
+                content.starts_with("[IMAGE:"),
+                "{ext}: image should get [IMAGE:] marker, got: {content}"
+            );
+        }
+    }
+
+    /// Multimodal pipeline must return 0 image markers for document-formatted
+    /// content — even for a file misclassified as Photo (issue #1274).
+    #[test]
+    fn markdown_attachment_not_detected_by_multimodal_image_markers() {
+        let content = format_attachment_content(
+            IncomingAttachmentKind::Photo,
+            "notes.md",
+            std::path::Path::new("/tmp/ws/notes.md"),
+        );
+        let messages = vec![crate::providers::ChatMessage::user(content)];
+        assert_eq!(
+            crate::multimodal::count_image_markers(&messages),
+            0,
+            "markdown file must not trigger image marker detection"
+        );
+    }
+
+    /// `is_image_extension` helper recognizes image formats and rejects others.
+    #[test]
+    fn is_image_extension_recognizes_images() {
+        assert!(is_image_extension(std::path::Path::new("photo.png")));
+        assert!(is_image_extension(std::path::Path::new("photo.jpg")));
+        assert!(is_image_extension(std::path::Path::new("photo.jpeg")));
+        assert!(is_image_extension(std::path::Path::new("photo.gif")));
+        assert!(is_image_extension(std::path::Path::new("photo.webp")));
+        assert!(is_image_extension(std::path::Path::new("photo.bmp")));
+        assert!(is_image_extension(std::path::Path::new("PHOTO.PNG")));
+
+        assert!(!is_image_extension(std::path::Path::new("file.md")));
+        assert!(!is_image_extension(std::path::Path::new("file.txt")));
+        assert!(!is_image_extension(std::path::Path::new("file.pdf")));
+        assert!(!is_image_extension(std::path::Path::new("file.csv")));
+        assert!(!is_image_extension(std::path::Path::new("file")));
     }
 
     /// `count_image_markers` from the multimodal module must detect the
@@ -4104,7 +4316,8 @@ mod tests {
         std::fs::write(&doc_path, b"%PDF-1.4 fake").expect("write doc fixture");
         assert!(doc_path.exists(), "document file must exist on disk");
 
-        let doc_content = format!("[Document: {}] {}", doc_filename, doc_path.display());
+        let doc_content =
+            format_attachment_content(IncomingAttachmentKind::Document, doc_filename, &doc_path);
         assert!(
             doc_content.starts_with("[Document: report.pdf]"),
             "document label format mismatch: {doc_content}"
@@ -4126,7 +4339,8 @@ mod tests {
         std::fs::copy(&fixture, &photo_path).expect("copy photo fixture");
         assert!(photo_path.exists(), "photo file must exist on disk");
 
-        let photo_content = format!("[IMAGE:{}]", photo_path.display());
+        let photo_content =
+            format_attachment_content(IncomingAttachmentKind::Photo, photo_filename, &photo_path);
         assert!(
             photo_content.starts_with("[IMAGE:"),
             "photo must use [IMAGE:] marker: {photo_content}"
@@ -4157,6 +4371,23 @@ mod tests {
         assert!(
             captioned.contains("Check this out"),
             "caption text must be present in content"
+        );
+
+        // ── Markdown file sent as Photo (issue #1274) ────────────────
+        let md_filename = "notes.md";
+        let md_path = workspace.path().join(md_filename);
+        std::fs::write(&md_path, b"# Hello\nSome markdown").expect("write md fixture");
+        let md_content =
+            format_attachment_content(IncomingAttachmentKind::Photo, md_filename, &md_path);
+        assert!(
+            !md_content.contains("[IMAGE:"),
+            "markdown must not get [IMAGE:] marker: {md_content}"
+        );
+        let md_msgs = vec![crate::providers::ChatMessage::user(md_content)];
+        assert_eq!(
+            crate::multimodal::count_image_markers(&md_msgs),
+            0,
+            "markdown file must not trigger image marker detection"
         );
     }
 

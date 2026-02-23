@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
   <a href="NOTICE"><img src="https://img.shields.io/badge/contributors-27+-green.svg" alt="Contributors" /></a>
   <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee" alt="Buy Me a Coffee" /></a>
   <a href="https://x.com/zeroclawlabs?s=21"><img src="https://img.shields.io/badge/X-%40zeroclawlabs-000000?style=flat&logo=x&logoColor=white" alt="X: @zeroclawlabs" /></a>
@@ -411,6 +411,7 @@ Every subsystem is a **trait** — swap implementations with a config change, ze
 | **Heartbeat** | Engine | HEARTBEAT.md periodic tasks | — |
 | **Skills** | Loader | TOML manifests + SKILL.md instructions | Community skill packs |
 | **Integrations** | Registry | 70+ integrations across 9 categories | Plugin system |
+| **MCP** | — | .mcp.json config, mcp_manage tool, stdio transport | Any MCP-compatible server |
 
 ### Runtime support (current)
 
@@ -954,6 +955,7 @@ See [aieos.org](https://aieos.org) for the full schema and live examples.
 | `service install/start/stop/status/uninstall` | Manage background service (systemd user-level or OpenRC system-wide) |
 | `doctor` | Diagnose daemon/scheduler/channel freshness |
 | `status` | Show full system status |
+| `estop` | Engage/resume emergency-stop levels and view estop status |
 | `cron` | Manage scheduled tasks (`list/add/add-at/add-every/once/remove/update/pause/resume`) |
 | `models` | Refresh provider model catalogs (`models refresh`) |
 | `providers` | List supported providers and aliases |
@@ -1003,6 +1005,8 @@ open_skills_enabled = true
 ```
 
 You can also override at runtime with `ZEROCLAW_OPEN_SKILLS_ENABLED`, `ZEROCLAW_OPEN_SKILLS_DIR`, and `ZEROCLAW_SKILLS_PROMPT_MODE` (`full` or `compact`).
+
+Skill installs are now gated by a built-in static security audit. `zeroclaw skills install <source>` blocks symlinks, script-like files, unsafe markdown link patterns, and high-risk shell payload snippets before accepting a skill. You can run `zeroclaw skills audit <source_or_name>` to validate a local directory or an installed skill manually.
 
 ## Development
 
@@ -1111,7 +1115,7 @@ ZeroClaw is dual-licensed for maximum openness and contributor protection:
 
 | License | Use case |
 |---|---|
-| [MIT](LICENSE) | Open-source, research, academic, personal use |
+| [MIT](LICENSE-MIT) | Open-source, research, academic, personal use |
 | [Apache 2.0](LICENSE-APACHE) | Patent protection, institutional, commercial deployment |
 
 You may choose either license. **Contributors automatically grant rights under both** — see [CLA.md](CLA.md) for the full contributor agreement.

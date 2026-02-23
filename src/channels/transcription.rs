@@ -58,7 +58,10 @@ fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<S
         .context("Failed to read WAV audio")?;
     let spec = reader.spec();
     let samples: Vec<f32> = if spec.sample_format == hound::SampleFormat::Float {
-        reader.into_samples::<f32>().filter_map(|s| s.ok()).collect()
+        reader
+            .into_samples::<f32>()
+            .filter_map(|s| s.ok())
+            .collect()
     } else {
         reader
             .into_samples::<i16>()
@@ -66,7 +69,9 @@ fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<S
             .map(|s| s as f32 / i16::MAX as f32)
             .collect()
     };
-    let mut rec = recognizer.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
+    let mut rec = recognizer
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
     let result = rec.transcribe(spec.sample_rate, &samples);
     Ok(result.text.trim().to_string())
 }

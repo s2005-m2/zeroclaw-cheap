@@ -19,6 +19,7 @@ pub mod browser;
 pub mod browser_open;
 pub mod cli_discovery;
 pub mod composio;
+pub mod content_search;
 pub mod cron_add;
 pub mod cron_list;
 pub mod cron_remove;
@@ -36,9 +37,12 @@ pub mod hardware_memory_map;
 pub mod hardware_memory_read;
 pub mod http_request;
 pub mod image_info;
+pub mod mcp_bridge;
+pub mod mcp_manage;
 pub mod memory_forget;
 pub mod memory_recall;
 pub mod memory_store;
+pub mod model_routing_config;
 pub mod pdf_read;
 pub mod proxy_config;
 pub mod pushover;
@@ -52,6 +56,7 @@ pub mod web_search_tool;
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
+pub use content_search::ContentSearchTool;
 pub use cron_add::CronAddTool;
 pub use cron_list::CronListTool;
 pub use cron_remove::CronRemoveTool;
@@ -69,9 +74,12 @@ pub use hardware_memory_map::HardwareMemoryMapTool;
 pub use hardware_memory_read::HardwareMemoryReadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
+pub use mcp_bridge::McpBridgeTool;
+pub use mcp_manage::McpManageTool;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_recall::MemoryRecallTool;
 pub use memory_store::MemoryStoreTool;
+pub use model_routing_config::ModelRoutingConfigTool;
 pub use pdf_read::PdfReadTool;
 pub use proxy_config::ProxyConfigTool;
 pub use pushover::PushoverTool;
@@ -142,7 +150,8 @@ pub fn default_tools_with_runtime(
         Box::new(FileReadTool::new(security.clone())),
         Box::new(FileWriteTool::new(security.clone())),
         Box::new(FileEditTool::new(security.clone())),
-        Box::new(GlobSearchTool::new(security)),
+        Box::new(GlobSearchTool::new(security.clone())),
+        Box::new(ContentSearchTool::new(security)),
     ]
 }
 
@@ -199,6 +208,7 @@ pub fn all_tools_with_runtime(
         Arc::new(FileWriteTool::new(security.clone())),
         Arc::new(FileEditTool::new(security.clone())),
         Arc::new(GlobSearchTool::new(security.clone())),
+        Arc::new(ContentSearchTool::new(security.clone())),
         Arc::new(CronAddTool::new(config.clone(), security.clone())),
         Arc::new(CronListTool::new(config.clone())),
         Arc::new(CronRemoveTool::new(config.clone(), security.clone())),
@@ -209,6 +219,10 @@ pub fn all_tools_with_runtime(
         Arc::new(MemoryRecallTool::new(memory.clone())),
         Arc::new(MemoryForgetTool::new(memory, security.clone())),
         Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
+        Arc::new(ModelRoutingConfigTool::new(
+            config.clone(),
+            security.clone(),
+        )),
         Arc::new(ProxyConfigTool::new(config.clone(), security.clone())),
         Arc::new(GitOperationsTool::new(
             security.clone(),
@@ -334,7 +348,7 @@ mod tests {
     fn default_tools_has_expected_count() {
         let security = Arc::new(SecurityPolicy::default());
         let tools = default_tools(security);
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
     }
 
     #[test]
@@ -373,6 +387,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"browser_open"));
         assert!(names.contains(&"schedule"));
+        assert!(names.contains(&"model_routing_config"));
         assert!(names.contains(&"pushover"));
         assert!(names.contains(&"proxy_config"));
     }
@@ -412,6 +427,8 @@ mod tests {
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"browser_open"));
+        assert!(names.contains(&"content_search"));
+        assert!(names.contains(&"model_routing_config"));
         assert!(names.contains(&"pushover"));
         assert!(names.contains(&"proxy_config"));
     }
@@ -426,6 +443,7 @@ mod tests {
         assert!(names.contains(&"file_write"));
         assert!(names.contains(&"file_edit"));
         assert!(names.contains(&"glob_search"));
+        assert!(names.contains(&"content_search"));
     }
 
     #[test]

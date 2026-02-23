@@ -35,6 +35,7 @@ pub struct Agent {
     history: Vec<ConversationMessage>,
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
+    mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
 }
 
 pub struct AgentBuilder {
@@ -55,6 +56,7 @@ pub struct AgentBuilder {
     auto_save: Option<bool>,
     classification_config: Option<crate::config::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
+    mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
 }
 
 impl AgentBuilder {
@@ -77,6 +79,7 @@ impl AgentBuilder {
             auto_save: None,
             classification_config: None,
             available_hints: None,
+            mcp_registry: None,
         }
     }
 
@@ -171,6 +174,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn mcp_registry(mut self, registry: Arc<zeroclaw_mcp::registry::McpRegistry>) -> Self {
+        self.mcp_registry = Some(registry);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -213,6 +221,7 @@ impl AgentBuilder {
             history: Vec::new(),
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
+            mcp_registry: self.mcp_registry,
         })
     }
 }
@@ -274,6 +283,42 @@ impl Agent {
             config,
         );
 
+        // Wire MCP if enabled
+        let mcp_registry = if config.mcp.enabled {
+            let config_path = config.mcp.config_path.as_deref().unwrap_or(".mcp.json");
+            let mcp_json_path = config.workspace_dir.join(config_path);
+
+            if mcp_json_path.exists() {
+                let builtin_names: std::collections::HashSet<String> =
+                    tools.iter().map(|t| t.name().to_string()).collect();
+                let registry = Arc::new(zeroclaw_mcp::registry::McpRegistry::new(
+                    config.mcp.tool_cap,
+                    builtin_names,
+                ));
+
+                // Log configured servers (actual connection happens lazily or via mcp_manage tool)
+                match zeroclaw_mcp::config::load_mcp_configs(Some(&mcp_json_path)) {
+                    Ok(configs) => {
+                        for server_config in configs {
+                            tracing::info!(
+                                "MCP: server '{}' configured (connect on first use)",
+                                server_config.name
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load MCP config from {:?}: {}", mcp_json_path, e);
+                    }
+                }
+                Some(registry)
+            } else {
+                tracing::debug!("No .mcp.json found at {:?}, MCP disabled", mcp_json_path);
+                None
+            }
+        } else {
+            None
+        };
+
         let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
 
         let model_name = config
@@ -302,7 +347,7 @@ impl Agent {
         let available_hints: Vec<String> =
             config.model_routes.iter().map(|r| r.hint.clone()).collect();
 
-        Agent::builder()
+        let mut builder = Agent::builder()
             .provider(provider)
             .tools(tools)
             .memory(memory)
@@ -325,8 +370,13 @@ impl Agent {
                 config,
             ))
             .skills_prompt_mode(config.skills.prompt_injection_mode)
-            .auto_save(config.memory.auto_save)
-            .build()
+            .auto_save(config.memory.auto_save);
+
+        if let Some(registry) = mcp_registry {
+            builder = builder.mcp_registry(registry);
+        }
+
+        builder.build()
     }
 
     fn trim_history(&mut self) {
@@ -435,6 +485,53 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        // Snapshot MCP tools if registry is present
+        if let Some(ref registry) = self.mcp_registry {
+            // Remove previous MCP bridge tools (names start with "mcp_")
+            self.tools.retain(|t| !t.name().starts_with("mcp_"));
+
+            let mcp_tools = registry.get_all_tools().await;
+            let bridge_tools: Vec<Box<dyn Tool>> = mcp_tools
+                .into_iter()
+                .map(|(server_name, tool_info)| {
+                    Box::new(crate::tools::McpBridgeTool::new(
+                        server_name,
+                        tool_info,
+                        Arc::clone(registry),
+                    )) as Box<dyn Tool>
+                })
+                .collect();
+            self.tools.extend(bridge_tools);
+            self.tool_specs = self.tools.iter().map(|t| t.spec()).collect();
+
+            // Inject MCP resources and prompts into system prompt
+            let resources = registry.get_all_resources().await;
+            let prompts = registry.get_all_prompts().await;
+            if !resources.is_empty() || !prompts.is_empty() {
+                let mut mcp_context = String::new();
+                if !resources.is_empty() {
+                    mcp_context.push_str("\n[MCP Resources]\n");
+                    for (server, res) in &resources {
+                        let desc = res.description.as_deref().unwrap_or("");
+                        mcp_context.push_str(&format!("  {}: {} — {}\n", server, res.uri, desc));
+                    }
+                }
+                if !prompts.is_empty() {
+                    mcp_context.push_str("\n[MCP Prompts]\n");
+                    for (server, prompt) in &prompts {
+                        let desc = prompt.description.as_deref().unwrap_or("");
+                        mcp_context
+                            .push_str(&format!("  {}: {} — {}\n", server, prompt.name, desc));
+                    }
+                }
+                if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {
+                    if sys_msg.role == "system" {
+                        sys_msg.content.push_str(&mcp_context);
+                    }
+                }
+            }
+        }
+
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -518,6 +615,7 @@ impl Agent {
             self.history.push(ConversationMessage::AssistantToolCalls {
                 text: response.text.clone(),
                 tool_calls: response.tool_calls.clone(),
+                reasoning_content: response.reasoning_content.clone(),
             });
 
             let results = self.execute_tools(&calls).await;
@@ -651,6 +749,7 @@ mod tests {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
+                    reasoning_content: None,
                 });
             }
             Ok(guard.remove(0))
@@ -689,6 +788,7 @@ mod tests {
                 text: Some("hello".into()),
                 tool_calls: vec![],
                 usage: None,
+                reasoning_content: None,
             }]),
         });
 
@@ -728,11 +828,13 @@ mod tests {
                         arguments: "{}".into(),
                     }],
                     usage: None,
+                    reasoning_content: None,
                 },
                 crate::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
+                    reasoning_content: None,
                 },
             ]),
         });

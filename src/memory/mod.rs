@@ -3,9 +3,13 @@ pub mod chunker;
 pub mod cli;
 pub mod embeddings;
 pub mod hygiene;
+#[cfg(feature = "memory-lancedb")]
+pub mod lancedb;
 pub mod lucid;
 pub mod markdown;
 pub mod none;
+#[cfg(feature = "local-embedding")]
+pub mod onnx_embedding;
 #[cfg(feature = "memory-postgres")]
 pub mod postgres;
 pub mod response_cache;
@@ -13,10 +17,6 @@ pub mod snapshot;
 pub mod sqlite;
 pub mod traits;
 pub mod vector;
-#[cfg(feature = "memory-lancedb")]
-pub mod lancedb;
-#[cfg(feature = "local-embedding")]
-pub mod onnx_embedding;
 
 #[allow(unused_imports)]
 pub use backend::{
@@ -61,7 +61,9 @@ where
         MemoryBackendKind::Markdown => Ok(Box::new(MarkdownMemory::new(workspace_dir))),
         MemoryBackendKind::None => Ok(Box::new(NoneMemory::new())),
         MemoryBackendKind::LanceDb => {
-            anyhow::bail!("LanceDb backend must be constructed before calling create_memory_with_builders")
+            anyhow::bail!(
+                "LanceDb backend must be constructed before calling create_memory_with_builders"
+            )
         }
         MemoryBackendKind::Unknown => {
             tracing::warn!(

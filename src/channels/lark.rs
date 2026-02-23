@@ -203,14 +203,15 @@ fn ensure_lark_send_success(
 /// Supports two receive modes (configured via `receive_mode` in config):
 /// - **`websocket`** (default): persistent WSS long-connection; no public URL needed.
 /// - **`webhook`**: HTTP callback server; requires a public HTTPS endpoint.
+#[derive(Clone)]
 pub struct LarkChannel {
     app_id: String,
     app_secret: String,
     verification_token: String,
     port: Option<u16>,
     allowed_users: Vec<String>,
-    /// When true, use Feishu (CN) endpoints; when false, use Lark (international).
-    use_feishu: bool,
+    /// Runtime endpoint/platform selection.
+    platform: LarkPlatform,
     /// How to receive events: WebSocket long-connection or HTTP webhook.
     receive_mode: crate::config::schema::LarkReceiveMode,
     /// Cached tenant access token
@@ -227,51 +228,99 @@ impl LarkChannel {
         port: Option<u16>,
         allowed_users: Vec<String>,
     ) -> Self {
+        Self::new_with_platform(
+            app_id,
+            app_secret,
+            verification_token,
+            port,
+            allowed_users,
+            LarkPlatform::Lark,
+        )
+    }
+
+    fn new_with_platform(
+        app_id: String,
+        app_secret: String,
+        verification_token: String,
+        port: Option<u16>,
+        allowed_users: Vec<String>,
+        platform: LarkPlatform,
+    ) -> Self {
         Self {
             app_id,
             app_secret,
             verification_token,
             port,
             allowed_users,
-            use_feishu: true,
+            platform,
             receive_mode: crate::config::schema::LarkReceiveMode::default(),
             tenant_token: Arc::new(RwLock::new(None)),
             ws_seen_ids: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Build from `LarkConfig` (preserves `use_feishu` and `receive_mode`).
+    /// Build from `LarkConfig` using legacy compatibility:
+    /// when `use_feishu=true`, this instance routes to Feishu endpoints.
     pub fn from_config(config: &crate::config::schema::LarkConfig) -> Self {
-        let mut ch = Self::new(
+        let platform = if config.use_feishu {
+            LarkPlatform::Feishu
+        } else {
+            LarkPlatform::Lark
+        };
+        let mut ch = Self::new_with_platform(
             config.app_id.clone(),
             config.app_secret.clone(),
             config.verification_token.clone().unwrap_or_default(),
             config.port,
             config.allowed_users.clone(),
+            platform,
         );
-        ch.use_feishu = config.use_feishu;
+        ch.receive_mode = config.receive_mode.clone();
+        ch
+    }
+
+    /// Build from explicit Lark config entry.
+    pub fn from_lark_config(config: &crate::config::schema::LarkConfig) -> Self {
+        let mut ch = Self::new_with_platform(
+            config.app_id.clone(),
+            config.app_secret.clone(),
+            config.verification_token.clone().unwrap_or_default(),
+            config.port,
+            config.allowed_users.clone(),
+            LarkPlatform::Lark,
+        );
+        ch.receive_mode = config.receive_mode.clone();
+        ch
+    }
+
+    /// Build from explicit Feishu config entry.
+    pub fn from_feishu_config(config: &crate::config::schema::FeishuConfig) -> Self {
+        let mut ch = Self::new_with_platform(
+            config.app_id.clone(),
+            config.app_secret.clone(),
+            config.verification_token.clone().unwrap_or_default(),
+            config.port,
+            config.allowed_users.clone(),
+            LarkPlatform::Feishu,
+        );
         ch.receive_mode = config.receive_mode.clone();
         ch
     }
 
     fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("channel.lark")
+        crate::config::build_runtime_proxy_client(self.platform.proxy_service_key())
+    }
+
+    fn channel_name(&self) -> &'static str {
+        self.platform.channel_name()
     }
 
     fn api_base(&self) -> &'static str {
-        if self.use_feishu {
-            FEISHU_BASE_URL
-        } else {
-            LARK_BASE_URL
-        }
+        self.platform.api_base()
     }
 
     fn ws_base(&self) -> &'static str {
-        if self.use_feishu {
-            FEISHU_WS_BASE_URL
-        } else {
-            LARK_WS_BASE_URL
-        }
+        self.platform.ws_base()
     }
 
     fn tenant_access_token_url(&self) -> String {
@@ -290,11 +339,12 @@ impl LarkChannel {
         &self,
         message_id: &str,
         token: &str,
+        emoji_type: &str,
     ) -> anyhow::Result<reqwest::Response> {
         let url = self.message_reaction_url(message_id);
         let body = serde_json::json!({
             "reaction_type": {
-                "emoji_type": ACK_REACTION_EMOJI_TYPE
+                "emoji_type": emoji_type
             }
         });
 
@@ -312,7 +362,7 @@ impl LarkChannel {
 
     /// Best-effort "received" signal for incoming messages.
     /// Failures are logged and never block normal message handling.
-    async fn try_add_ack_reaction(&self, message_id: &str) {
+    async fn try_add_ack_reaction(&self, message_id: &str, emoji_type: &str) {
         if message_id.is_empty() {
             return;
         }
@@ -328,7 +378,7 @@ impl LarkChannel {
         let mut retried = false;
         loop {
             let response = match self
-                .post_message_reaction_with_token(message_id, &token)
+                .post_message_reaction_with_token(message_id, &token, emoji_type)
                 .await
             {
                 Ok(resp) => resp,
@@ -387,7 +437,7 @@ impl LarkChannel {
         let resp = self
             .http_client()
             .post(format!("{}/callback/ws/endpoint", self.ws_base()))
-            .header("locale", if self.use_feishu { "zh" } else { "en" })
+            .header("locale", self.platform.locale_header())
             .json(&serde_json::json!({
                 "AppID": self.app_id,
                 "AppSecret": self.app_secret,
@@ -571,7 +621,9 @@ impl LarkChannel {
                     };
                     if event.header.event_type != "im.message.receive_v1" { continue; }
 
-                    let recv: MsgReceivePayload = match serde_json::from_value(event.event) {
+                    let event_payload = event.event;
+
+                    let recv: MsgReceivePayload = match serde_json::from_value(event_payload.clone()) {
                         Ok(r) => r,
                         Err(e) => { tracing::error!("Lark: payload parse: {e}"); continue; }
                     };
@@ -628,14 +680,22 @@ impl LarkChannel {
                         continue;
                     }
 
-                    self.try_add_ack_reaction(&lark_msg.message_id).await;
+                    let ack_emoji =
+                        random_lark_ack_reaction(Some(&event_payload), &text).to_string();
+                    let reaction_channel = self.clone();
+                    let reaction_message_id = lark_msg.message_id.clone();
+                    tokio::spawn(async move {
+                        reaction_channel
+                            .try_add_ack_reaction(&reaction_message_id, &ack_emoji)
+                            .await;
+                    });
 
                     let channel_msg = ChannelMessage {
                         id: Uuid::new_v4().to_string(),
                         sender: lark_msg.chat_id.clone(),
                         reply_target: lark_msg.chat_id.clone(),
                         content: text,
-                        channel: "lark".to_string(),
+                        channel: self.channel_name().to_string(),
                         timestamp: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
@@ -834,7 +894,7 @@ impl LarkChannel {
             sender: chat_id.to_string(),
             reply_target: chat_id.to_string(),
             content: text,
-            channel: "lark".to_string(),
+            channel: self.channel_name().to_string(),
             timestamp,
             thread_ts: None,
         });
@@ -846,7 +906,7 @@ impl LarkChannel {
 #[async_trait]
 impl Channel for LarkChannel {
     fn name(&self) -> &str {
-        "lark"
+        self.channel_name()
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
@@ -948,7 +1008,16 @@ impl LarkChannel {
                     .pointer("/event/message/message_id")
                     .and_then(|m| m.as_str())
                 {
-                    state.channel.try_add_ack_reaction(message_id).await;
+                    let ack_text = messages.first().map_or("", |msg| msg.content.as_str());
+                    let ack_emoji =
+                        random_lark_ack_reaction(payload.get("event"), ack_text).to_string();
+                    let reaction_channel = Arc::clone(&state.channel);
+                    let reaction_message_id = message_id.to_string();
+                    tokio::spawn(async move {
+                        reaction_channel
+                            .try_add_ack_reaction(&reaction_message_id, &ack_emoji)
+                            .await;
+                    });
                 }
             }
 
@@ -968,13 +1037,7 @@ impl LarkChannel {
 
         let state = AppState {
             verification_token: self.verification_token.clone(),
-            channel: Arc::new(LarkChannel::new(
-                self.app_id.clone(),
-                self.app_secret.clone(),
-                self.verification_token.clone(),
-                None,
-                self.allowed_users.clone(),
-            )),
+            channel: Arc::new(self.clone()),
             tx,
         };
 
@@ -995,6 +1058,208 @@ impl LarkChannel {
 // ─────────────────────────────────────────────────────────────────────────────
 // WS helper functions
 // ─────────────────────────────────────────────────────────────────────────────
+
+fn pick_uniform_index(len: usize) -> usize {
+    debug_assert!(len > 0);
+    let upper = len as u64;
+    let reject_threshold = (u64::MAX / upper) * upper;
+
+    loop {
+        let value = rand::random::<u64>();
+        if value < reject_threshold {
+            return (value % upper) as usize;
+        }
+    }
+}
+
+fn random_from_pool(pool: &'static [&'static str]) -> &'static str {
+    pool[pick_uniform_index(pool.len())]
+}
+
+fn lark_ack_pool(locale: LarkAckLocale) -> &'static [&'static str] {
+    match locale {
+        LarkAckLocale::ZhCn => LARK_ACK_REACTIONS_ZH_CN,
+        LarkAckLocale::ZhTw => LARK_ACK_REACTIONS_ZH_TW,
+        LarkAckLocale::En => LARK_ACK_REACTIONS_EN,
+        LarkAckLocale::Ja => LARK_ACK_REACTIONS_JA,
+    }
+}
+
+fn map_locale_tag(tag: &str) -> Option<LarkAckLocale> {
+    let normalized = tag.trim().to_ascii_lowercase().replace('-', "_");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.starts_with("ja") {
+        return Some(LarkAckLocale::Ja);
+    }
+    if normalized.starts_with("en") {
+        return Some(LarkAckLocale::En);
+    }
+    if normalized.contains("hant")
+        || normalized.starts_with("zh_tw")
+        || normalized.starts_with("zh_hk")
+        || normalized.starts_with("zh_mo")
+    {
+        return Some(LarkAckLocale::ZhTw);
+    }
+    if normalized.starts_with("zh") {
+        return Some(LarkAckLocale::ZhCn);
+    }
+    None
+}
+
+fn find_locale_hint(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in [
+                "locale",
+                "language",
+                "lang",
+                "i18n_locale",
+                "user_locale",
+                "locale_id",
+            ] {
+                if let Some(locale) = map.get(key).and_then(serde_json::Value::as_str) {
+                    return Some(locale.to_string());
+                }
+            }
+
+            for child in map.values() {
+                if let Some(locale) = find_locale_hint(child) {
+                    return Some(locale);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                if let Some(locale) = find_locale_hint(child) {
+                    return Some(locale);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn detect_locale_from_post_content(content: &str) -> Option<LarkAckLocale> {
+    let parsed = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let obj = parsed.as_object()?;
+    for key in obj.keys() {
+        if let Some(locale) = map_locale_tag(key) {
+            return Some(locale);
+        }
+    }
+    None
+}
+
+fn is_japanese_kana(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3040..=0x309F | // Hiragana
+        0x30A0..=0x30FF | // Katakana
+        0x31F0..=0x31FF // Katakana Phonetic Extensions
+    )
+}
+
+fn is_cjk_han(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF | // CJK Extension A
+        0x4E00..=0x9FFF // CJK Unified Ideographs
+    )
+}
+
+fn is_traditional_only_han(ch: char) -> bool {
+    matches!(
+        ch,
+        '奮' | '鬥'
+            | '強'
+            | '體'
+            | '國'
+            | '臺'
+            | '萬'
+            | '與'
+            | '為'
+            | '這'
+            | '學'
+            | '機'
+            | '開'
+            | '裡'
+    )
+}
+
+fn is_simplified_only_han(ch: char) -> bool {
+    matches!(
+        ch,
+        '奋' | '斗'
+            | '强'
+            | '体'
+            | '国'
+            | '台'
+            | '万'
+            | '与'
+            | '为'
+            | '这'
+            | '学'
+            | '机'
+            | '开'
+            | '里'
+    )
+}
+
+fn detect_locale_from_text(text: &str) -> Option<LarkAckLocale> {
+    if text.chars().any(is_japanese_kana) {
+        return Some(LarkAckLocale::Ja);
+    }
+    if text.chars().any(is_traditional_only_han) {
+        return Some(LarkAckLocale::ZhTw);
+    }
+    if text.chars().any(is_simplified_only_han) {
+        return Some(LarkAckLocale::ZhCn);
+    }
+    if text.chars().any(is_cjk_han) {
+        return Some(LarkAckLocale::ZhCn);
+    }
+    None
+}
+
+fn detect_lark_ack_locale(
+    payload: Option<&serde_json::Value>,
+    fallback_text: &str,
+) -> LarkAckLocale {
+    if let Some(payload) = payload {
+        if let Some(locale) = find_locale_hint(payload).and_then(|hint| map_locale_tag(&hint)) {
+            return locale;
+        }
+
+        let message_content = payload
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                payload
+                    .pointer("/event/message/content")
+                    .and_then(serde_json::Value::as_str)
+            });
+
+        if let Some(locale) = message_content.and_then(detect_locale_from_post_content) {
+            return locale;
+        }
+    }
+
+    detect_locale_from_text(fallback_text).unwrap_or(LarkAckLocale::En)
+}
+
+fn random_lark_ack_reaction(
+    payload: Option<&serde_json::Value>,
+    fallback_text: &str,
+) -> &'static str {
+    let locale = detect_lark_ack_locale(payload, fallback_text);
+    random_from_pool(lark_ack_pool(locale))
+}
 
 /// Flatten a Feishu `post` rich-text message to plain text.
 ///
@@ -1506,6 +1771,49 @@ mod tests {
     }
 
     #[test]
+    fn lark_from_lark_config_ignores_legacy_feishu_flag() {
+        use crate::config::schema::{LarkConfig, LarkReceiveMode};
+
+        let cfg = LarkConfig {
+            app_id: "cli_app123".into(),
+            app_secret: "secret456".into(),
+            encrypt_key: None,
+            verification_token: Some("vtoken789".into()),
+            allowed_users: vec!["*".into()],
+            use_feishu: true,
+            receive_mode: LarkReceiveMode::Webhook,
+            port: Some(9898),
+        };
+
+        let ch = LarkChannel::from_lark_config(&cfg);
+
+        assert_eq!(ch.api_base(), LARK_BASE_URL);
+        assert_eq!(ch.ws_base(), LARK_WS_BASE_URL);
+        assert_eq!(ch.name(), "lark");
+    }
+
+    #[test]
+    fn lark_from_feishu_config_sets_feishu_platform() {
+        use crate::config::schema::{FeishuConfig, LarkReceiveMode};
+
+        let cfg = FeishuConfig {
+            app_id: "cli_feishu_app123".into(),
+            app_secret: "secret456".into(),
+            encrypt_key: None,
+            verification_token: Some("vtoken789".into()),
+            allowed_users: vec!["*".into()],
+            receive_mode: LarkReceiveMode::Webhook,
+            port: Some(9898),
+        };
+
+        let ch = LarkChannel::from_feishu_config(&cfg);
+
+        assert_eq!(ch.api_base(), FEISHU_BASE_URL);
+        assert_eq!(ch.ws_base(), FEISHU_WS_BASE_URL);
+        assert_eq!(ch.name(), "feishu");
+    }
+
+    #[test]
     fn lark_parse_fallback_sender_to_open_id() {
         // When chat_id is missing, sender should fall back to open_id
         let ch = LarkChannel::new(
@@ -1534,17 +1842,122 @@ mod tests {
 
     #[test]
     fn lark_reaction_url_matches_region() {
-        let ch_cn = make_channel();
+        let ch_lark = make_channel();
         assert_eq!(
-            ch_cn.message_reaction_url("om_test_message_id"),
-            "https://open.feishu.cn/open-apis/im/v1/messages/om_test_message_id/reactions"
-        );
-
-        let mut ch_intl = make_channel();
-        ch_intl.use_feishu = false;
-        assert_eq!(
-            ch_intl.message_reaction_url("om_test_message_id"),
+            ch_lark.message_reaction_url("om_test_message_id"),
             "https://open.larksuite.com/open-apis/im/v1/messages/om_test_message_id/reactions"
         );
+
+        let feishu_cfg = crate::config::schema::FeishuConfig {
+            app_id: "cli_app123".into(),
+            app_secret: "secret456".into(),
+            encrypt_key: None,
+            verification_token: Some("vtoken789".into()),
+            allowed_users: vec!["*".into()],
+            receive_mode: crate::config::schema::LarkReceiveMode::Webhook,
+            port: Some(9898),
+        };
+        let ch_feishu = LarkChannel::from_feishu_config(&feishu_cfg);
+        assert_eq!(
+            ch_feishu.message_reaction_url("om_test_message_id"),
+            "https://open.feishu.cn/open-apis/im/v1/messages/om_test_message_id/reactions"
+        );
+    }
+
+    #[test]
+    fn lark_reaction_locale_explicit_language_tags() {
+        assert_eq!(map_locale_tag("zh-CN"), Some(LarkAckLocale::ZhCn));
+        assert_eq!(map_locale_tag("zh_TW"), Some(LarkAckLocale::ZhTw));
+        assert_eq!(map_locale_tag("zh-Hant"), Some(LarkAckLocale::ZhTw));
+        assert_eq!(map_locale_tag("en-US"), Some(LarkAckLocale::En));
+        assert_eq!(map_locale_tag("ja-JP"), Some(LarkAckLocale::Ja));
+        assert_eq!(map_locale_tag("fr-FR"), None);
+    }
+
+    #[test]
+    fn lark_reaction_locale_prefers_explicit_payload_locale() {
+        let payload = serde_json::json!({
+            "sender": {
+                "locale": "ja-JP"
+            },
+            "message": {
+                "content": "{\"text\":\"hello\"}"
+            }
+        });
+        assert_eq!(
+            detect_lark_ack_locale(Some(&payload), "你好，世界"),
+            LarkAckLocale::Ja
+        );
+    }
+
+    #[test]
+    fn lark_reaction_locale_unsupported_payload_falls_back_to_text_script() {
+        let payload = serde_json::json!({
+            "sender": {
+                "locale": "fr-FR"
+            },
+            "message": {
+                "content": "{\"text\":\"頑張れ\"}"
+            }
+        });
+        assert_eq!(
+            detect_lark_ack_locale(Some(&payload), "頑張ってください"),
+            LarkAckLocale::Ja
+        );
+    }
+
+    #[test]
+    fn lark_reaction_locale_detects_simplified_and_traditional_text() {
+        assert_eq!(
+            detect_lark_ack_locale(None, "继续奋斗，今天很强"),
+            LarkAckLocale::ZhCn
+        );
+        assert_eq!(
+            detect_lark_ack_locale(None, "繼續奮鬥，今天很強"),
+            LarkAckLocale::ZhTw
+        );
+    }
+
+    #[test]
+    fn lark_reaction_locale_defaults_to_english_for_unsupported_text() {
+        assert_eq!(
+            detect_lark_ack_locale(None, "Bonjour tout le monde"),
+            LarkAckLocale::En
+        );
+    }
+
+    #[test]
+    fn random_lark_ack_reaction_respects_detected_locale_pool() {
+        let payload = serde_json::json!({
+            "sender": {
+                "locale": "zh-CN"
+            }
+        });
+        let selected = random_lark_ack_reaction(Some(&payload), "hello");
+        assert!(LARK_ACK_REACTIONS_ZH_CN.contains(&selected));
+
+        let payload = serde_json::json!({
+            "sender": {
+                "locale": "zh-TW"
+            }
+        });
+        let selected = random_lark_ack_reaction(Some(&payload), "hello");
+        assert!(LARK_ACK_REACTIONS_ZH_TW.contains(&selected));
+
+        let payload = serde_json::json!({
+            "sender": {
+                "locale": "en-US"
+            }
+        });
+        let selected = random_lark_ack_reaction(Some(&payload), "hello");
+        assert!(LARK_ACK_REACTIONS_EN.contains(&selected));
+
+        let payload = serde_json::json!({
+            "sender": {
+                "locale": "ja-JP"
+            }
+        });
+        let selected = random_lark_ack_reaction(Some(&payload), "hello");
+        assert!(LARK_ACK_REACTIONS_JA.contains(&selected));
     }
 }
