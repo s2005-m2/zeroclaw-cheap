@@ -144,7 +144,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
   - Message: `feat(mcp): scaffold zeroclaw-mcp crate`
   - Files: `crates/zeroclaw-mcp/**`, `Cargo.toml`
 
-- [ ] 2. MCP protocol types
+ [x] 2. MCP protocol types
   **What to do (TDD)**:
   - RED: Write serde roundtrip tests for all types first (tests fail — types don't exist yet)
   - GREEN: Define JSON-RPC 2.0 types in `crates/zeroclaw-mcp/src/jsonrpc.rs`: `Request`, `Response`, `Error`, `Id`
@@ -170,7 +170,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
   ```
   **Commit**: NO (groups with Wave 1)
 
-- [ ] 3. Stdio transport implementation
+ [x] 3. Stdio transport implementation
   **What to do (TDD)**:
   - RED: Write tests for McpTransport trait and StdioTransport first (tests fail)
   - GREEN: Define `McpTransport` trait in `crates/zeroclaw-mcp/src/transport.rs`: `async fn send(&mut self, msg: &Request)`, `async fn recv(&mut self) -> Response`
@@ -239,7 +239,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
     Evidence: .sisyphus/evidence/task-5-resources-prompts.txt
   ```
   **Commit**: YES — `feat(mcp): implement MCP client with full protocol support`
-- [ ] 6. .mcp.json config parser
+ [x] 6. .mcp.json config parser
   **What to do**:
   - Implement `parse_mcp_config(path) -> Vec<McpServerConfig>` in `crates/zeroclaw-mcp/src/config.rs`
   - `McpServerConfig`: `name`, `command`, `args`, `env`, `enabled`

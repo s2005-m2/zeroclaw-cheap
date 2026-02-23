@@ -45,3 +45,118 @@
 
 Both pass successfully with zero errors.
 
+
+
+## MCP Protocol Types Implementation (T14)
+
+**Date:** 2026-02-23
+
+### TDD Flow Success
+
+- Tests written FIRST in both jsonrpc.rs and types.rs
+- Implementation followed to make tests pass
+- All 20 tests pass on first full run after fixing one type error
+
+### Key Implementation Patterns
+
+1. **JSON-RPC 2.0 types** (jsonrpc.rs):
+   - RequestId uses #[serde(untagged)] enum for number/string flexibility
+   - jsonrpc field defaults to "2.0" via default function
+   - params/result/error use skip_serializing_if for Option types
+
+2. **MCP types** (types.rs):
+   - All structs use #[serde(rename_all = "camelCase")] for MCP spec compliance
+   - Marker capabilities (ToolsCapability, ResourcesCapability, PromptsCapability) are empty structs with Default
+   - McpContent uses content_type field with #[serde(rename = "type")] to avoid Rust keyword
+   - McpToolCallResult.isError uses #[serde(rename = "isError")] for exact spec compliance
+
+3. **Test coverage**: 20 tests total
+   - jsonrpc.rs: 8 tests (RequestId, Request, Response success/error, Notification, Error)
+   - types.rs: 12 tests (Implementation, InitializeParams/Result, ToolInfo/Params/Result, Content, Resource, Prompt, Message)
+
+### Gotchas Fixed
+
+- Doc comments on module declarations in lib.rs must use //! style or be placed before the item, not inline
+- RequestId::String variant needs owned String, not &str (fixed in test_jsonrpc_response_error_roundtrip)
+
+### Dependencies Used
+
+- serde (derive feature): Debug, Clone, Serialize, Deserialize derives
+- serde_json: json! macro and Value type
+- No new dependencies added
+
+
+
+## MCP Transport Layer Implementation (T2)
+
+**Date:** 2026-02-23
+
+### TDD Flow Success
+
+- Tests written FIRST in transport.rs
+- Implementation followed to make tests pass
+- All 7 transport tests pass on first full run
+
+### Key Implementation Patterns
+
+1. **McpTransport trait** (async trait for transport abstraction):
+   - `send()`: Send JSON-RPC request
+   - `send_notification()`: Send JSON-RPC notification (no response)
+   - `receive()`: Receive JSON-RPC response
+   - `close()`: Close transport and cleanup resources
+
+2. **StdioTransport implementation**:
+   - Spawns child process via `tokio::process::Command`
+   - Pipes stdin/stdout/stderr
+   - Uses newline-delimited JSON framing (each message = one line)
+   - `write_json()`: Serialize to JSON + write + newline + flush
+   - `read_json()`: Read line from BufReader + deserialize
+   - `close()`: Kill child process + wait for exit
+   - `Drop` impl: Ensure cleanup on drop
+
+3. **Constructor**:
+   ```rust
+   pub async fn new(
+       command: &str,
+       args: &[String],
+       env: &HashMap<String, String>
+   ) -> anyhow::Result<Self>
+   ```
+
+### Test Coverage (7 tests)
+
+1. `test_stdio_transport_new_with_cat`: Process spawning (unix: cat, windows: PowerShell)
+2. `test_stdio_transport_serialization`: Request serialization
+3. `test_stdio_transport_notification_serialization`: Notification serialization
+4. `test_stdio_transport_response_deserialization`: Success response deserialization
+5. `test_stdio_transport_error_deserialization`: Error response deserialization
+6. `test_stdio_transport_send_receive_echo`: Integration test with echo script (unix only)
+7. `test_stdio_transport_close_kills_process`: Process cleanup verification
+8. `test_newline_delimited_framing`: Framing logic verification
+
+### Platform-Specific Code
+
+- Used `#[cfg(unix)]` and `#[cfg(windows)]` for platform-specific tests
+- Unix tests use `cat` and bash scripts
+- Windows tests use PowerShell commands
+- Core implementation is cross-platform (uses tokio::process::Command)
+
+### Dependencies Used
+
+- tokio: process, io (AsyncBufReadExt, AsyncWriteExt, BufReader)
+- serde_json: Value type, to_string, from_str, from_value, to_value
+- anyhow: Context trait for error handling
+- async_trait: #[async_trait] macro
+- tracing: debug!, info!, error! macros
+
+### Gotchas Fixed
+
+1. `Child::try_kill()` doesn't exist → use `kill().await` instead
+2. `Child::start_try_wait()` doesn't exist → use `try_wait()` instead
+3. `Child` doesn't implement Debug → add `#[derive(Debug)]` to StdioTransport
+4. Error formatting in tests → removed `{:?}` format for Result types
+
+### Module Registration
+
+- Added `pub mod transport;` to lib.rs (between jsonrpc and types)
+- Commented out future modules (client, config) remain
