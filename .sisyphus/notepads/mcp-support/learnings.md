@@ -160,3 +160,26 @@ Both pass successfully with zero errors.
 
 - Added `pub mod transport;` to lib.rs (between jsonrpc and types)
 - Commented out future modules (client, config) remain
+## MCP Client Resources and Prompts Implementation - 2026-02-23
+
+### What was implemented:
+- Added resource methods: list_resources(), read_resource()
+- Added prompt methods: list_prompts(), get_prompt()
+- Both methods follow the same JSON-RPC pattern as tool methods
+- Error handling checks response.error field before parsing result
+
+### Key patterns used:
+1. Send JSON-RPC request with method name (resources/list, resources/read, prompts/list, prompts/get)
+2. Receive response and check for error field
+3. Parse result.{resources,contents,prompts,messages} array
+4. Return typed Vec<McpResource>, Vec<McpResourceContent>, Vec<McpPrompt>, or Vec<McpPromptMessage>
+
+### Verification:
+- cargo check -p zeroclaw-mcp: PASSED
+- cargo test -p zeroclaw-mcp: ALL 34 TESTS PASSED
+
+### Notes:
+- Module-level doc comment is necessary (priority 3) for public API documentation
+- Removed Debug derive from McpClient because Box<dyn McpTransport> doesn't implement Debug
+- Removed unused McpPromptArgument import
+

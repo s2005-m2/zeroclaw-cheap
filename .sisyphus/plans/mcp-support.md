@@ -196,7 +196,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
   ```
   **Commit**: YES — `feat(mcp): add MCP protocol types and stdio transport`
 
-- [ ] 4. MCP client — tools (initialize + tools/list + tools/call)
+ [x] 4. MCP client — tools (initialize + tools/list + tools/call)
   **What to do (TDD)**:
   - RED: Write tests for initialize handshake, list_tools, call_tool with mock transport (tests fail)
   - GREEN: Implement `McpClient` in `crates/zeroclaw-mcp/src/client.rs`
@@ -222,7 +222,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
     Evidence: .sisyphus/evidence/task-4-client-tools.txt
   ```
   **Commit**: NO (groups with Wave 2)
-- [ ] 5. MCP client — resources + prompts
+ [x] 5. MCP client — resources + prompts
   **What to do**:
   - Add to `McpClient`: `list_resources()`, `read_resource(uri)`, `list_prompts()`, `get_prompt(name, args)`
   - Tests with mock transport
