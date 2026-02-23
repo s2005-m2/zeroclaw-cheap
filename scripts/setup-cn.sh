@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ZeroClaw China Deployment Setup
 # Compiles with China-optimized features and downloads required model files.
-# Usage: bash scripts/setup-cn.sh [--skip-build] [--skip-models] [--model-mirror URL]
+# Usage: bash scripts/setup-cn.sh [--skip-build] [--skip-models] [--skip-browser] [--model-mirror URL]
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -11,14 +11,20 @@ EMBEDDING_DIR="$MODELS_DIR/embeddinggemma-300m"
 SENSEVOICE_DIR="$MODELS_DIR/sensevoice-small"
 LIB_DIR="$ZEROCLAW_HOME/lib"
 
-# HuggingFace mirror (hf-mirror.com is the standard China mirror)
+# HuggingFace mirror — hf-mirror.com is the standard China mirror.
+# Override with HF_MIRROR env var or --model-mirror flag.
 HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
 
+# npm China mirror (npmmirror is the standard China mirror)
+NPM_MIRROR="${NPM_MIRROR:-https://registry.npmmirror.com}"
+# Playwright browser binary download mirror
+PLAYWRIGHT_MIRROR="${PLAYWRIGHT_MIRROR:-https://registry.npmmirror.com/-/binary/playwright}"
 # Features to compile for China deployment
 CN_FEATURES="local-embedding,memory-lancedb,local-transcription,channel-lark"
 
 SKIP_BUILD=false
 SKIP_MODELS=false
+SKIP_BROWSER=false
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -27,10 +33,12 @@ while [[ $# -gt 0 ]]; do
     --skip-models) SKIP_MODELS=true; shift ;;
     --model-mirror) HF_MIRROR="$2"; shift 2 ;;
     --no-transcription) CN_FEATURES="local-embedding,memory-lancedb,channel-lark"; shift ;;
+    --skip-browser) SKIP_BROWSER=true; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-build] [--skip-models] [--no-transcription] [--model-mirror URL]"
+      echo "Usage: $0 [--skip-build] [--skip-models] [--skip-browser] [--no-transcription] [--model-mirror URL]"
       echo "  --skip-build        Skip cargo build (models only)"
       echo "  --skip-models       Skip model download (build only)"
+      echo "  --skip-browser      Skip browser dependency installation"
       echo "  --no-transcription  Exclude local-transcription feature (Windows)"
       echo "  --model-mirror URL  HuggingFace mirror (default: https://hf-mirror.com)"
       exit 0 ;;
@@ -48,8 +56,39 @@ download() {
     return 0
   fi
   info "Downloading: $url"
-  curl -fSL --retry 3 --connect-timeout 30 -o "$dest" "$url" \
+  curl -fSL -C - --retry 5 --retry-delay 3 --connect-timeout 30 -o "$dest" "$url" \
     || err "Failed to download $url"
+}
+
+# Download a HuggingFace repo.  Prefers huggingface-cli (multi-threaded,
+# resume-capable) and falls back to per-file curl.
+hf_download() {
+  local repo="$1" dest_dir="$2"
+  shift 2
+  local files=("$@")  # optional file list
+
+  if command -v huggingface-cli &>/dev/null; then
+    info "Using huggingface-cli for $repo (multi-threaded)..."
+    local hf_args=(huggingface-cli download "$repo" --local-dir "$dest_dir")
+    for f in "${files[@]}"; do hf_args+=("$f"); done
+    if HF_ENDPOINT="$HF_MIRROR" "${hf_args[@]}"; then
+      # Flatten subdirectory files to dest_dir (runtime expects flat layout)
+      for f in "${files[@]}"; do
+        local base; base="$(basename "$f")"
+        if [[ "$f" != "$base" && -f "$dest_dir/$f" && ! -f "$dest_dir/$base" ]]; then
+          mv "$dest_dir/$f" "$dest_dir/$base"
+        fi
+      done
+      return 0
+    fi
+    info "huggingface-cli failed, falling back to curl..."
+  fi
+
+  # curl fallback: download each file individually
+  mkdir -p "$dest_dir"
+  for f in "${files[@]}"; do
+    download "$HF_MIRROR/$repo/resolve/main/$f" "$dest_dir/$(basename "$f")"
+  done
 }
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -80,12 +119,8 @@ if [[ "$SKIP_MODELS" == false ]]; then
   if [[ -f "$EMBEDDING_DIR/model_quantized.onnx" && -f "$EMBEDDING_DIR/model_quantized.onnx_data" && -f "$EMBEDDING_DIR/tokenizer.json" ]]; then
     info "Embedding model already exists, skipping: $EMBEDDING_DIR"
   else
-    EMBED_REPO="onnx-community/embeddinggemma-300m-ONNX"
-    EMBED_BASE="$HF_MIRROR/$EMBED_REPO/resolve/main/onnx"
-    mkdir -p "$EMBEDDING_DIR"
-    download "$EMBED_BASE/model_quantized.onnx"      "$EMBEDDING_DIR/model_quantized.onnx"
-    download "$EMBED_BASE/model_quantized.onnx_data" "$EMBEDDING_DIR/model_quantized.onnx_data"
-    download "$HF_MIRROR/$EMBED_REPO/resolve/main/tokenizer.json" "$EMBEDDING_DIR/tokenizer.json"
+    hf_download "onnx-community/embeddinggemma-300m-ONNX" "$EMBEDDING_DIR" \
+      "onnx/model_quantized.onnx" "onnx/model_quantized.onnx_data" "tokenizer.json"
     info "Embedding model ready: $EMBEDDING_DIR"
   fi
 
@@ -94,11 +129,8 @@ if [[ "$SKIP_MODELS" == false ]]; then
     if [[ -f "$SENSEVOICE_DIR/model.onnx" && -f "$SENSEVOICE_DIR/tokens.txt" ]]; then
       info "SenseVoice model already exists, skipping: $SENSEVOICE_DIR"
     else
-      SV_REPO="csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
-      SV_BASE="$HF_MIRROR/$SV_REPO/resolve/main"
-      mkdir -p "$SENSEVOICE_DIR"
-      download "$SV_BASE/model.onnx"  "$SENSEVOICE_DIR/model.onnx"
-      download "$SV_BASE/tokens.txt" "$SENSEVOICE_DIR/tokens.txt"
+      hf_download "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17" "$SENSEVOICE_DIR" \
+        "model.onnx" "tokens.txt"
       info "SenseVoice model ready: $SENSEVOICE_DIR"
     fi
   fi
@@ -127,6 +159,36 @@ if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
   fi
 fi
 
+# ── Step 2.6: Install agent-browser and Playwright browsers ──────────────────
+# agent-browser is the default browser automation backend; it depends on
+# Playwright Chromium under the hood.  Use China npm/Playwright mirrors.
+if [[ "$SKIP_BROWSER" == false ]]; then
+  if ! command -v node &>/dev/null; then
+    info "Node.js not found — installing via China mirror..."
+    curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/nodesource/setup_lts.x | sudo -E bash -
+    sudo apt-get install -y nodejs || err "Failed to install Node.js"
+  fi
+
+  info "Installing agent-browser via China npm mirror ($NPM_MIRROR)..."
+  npm install -g agent-browser --registry="$NPM_MIRROR" \
+    || err "Failed to install agent-browser"
+
+  info "Installing Playwright Chromium via China mirror ($PLAYWRIGHT_MIRROR)..."
+  PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_MIRROR" npx --registry="$NPM_MIRROR" \
+    playwright install chromium \
+    || err "Failed to install Playwright Chromium"
+
+  # Install Playwright system dependencies (fonts, libs) on Linux
+  if [[ "$(uname)" == "Linux" ]]; then
+    npx --registry="$NPM_MIRROR" playwright install-deps chromium \
+      || info "WARNING: Failed to install Playwright system deps — browser may not work headless"
+  fi
+
+  info "Browser dependencies ready (agent-browser + Playwright Chromium)"
+else
+  info "Skipping browser dependencies (--skip-browser)"
+fi
+
 # ── Step 3: Write config via zeroclaw onboard ────────────────────────────────
 info "Generating base config via zeroclaw onboard..."
 zeroclaw onboard --provider qwen --memory lancedb --force
@@ -149,6 +211,10 @@ ensure_toml_key memory embedding_dims 768
 if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
   ensure_toml_key transcription provider '"local"'
   ensure_toml_key transcription model '"'"$SENSEVOICE_DIR"'"'
+fi
+if [[ "$SKIP_BROWSER" == false ]]; then
+  ensure_toml_key browser enabled true
+  ensure_toml_key browser backend '"agent_browser"'
 fi
 info "Config patched with local embedding/transcription settings"
 
