@@ -180,41 +180,12 @@ if [[ "$SKIP_BROWSER" == false ]]; then
   npm install -g agent-browser --registry="$NPM_MIRROR" \
     || err "Failed to install agent-browser"
 
-  info "Installing Playwright Chromium (via npmmirror chrome-for-testing mirror)..."
-  # Playwright 1.58+ uses Chrome for Testing CDN, but npmmirror path structure differs.
-  # We manually download from npmmirror and place in Playwright cache to avoid slow upstream CDN.
-  PW_BROWSER_REVISION=$(npx --registry="$NPM_MIRROR" playwright inspect browser chromium 2>/dev/null | grep -o 'Revision: [0-9]*' | grep -o '[0-9]*' || echo "")
-  if [[ -z "$PW_BROWSER_REVISION" ]]; then
-    # Fallback: get revision from playwright-core package
-    PW_BROWSER_REVISION="1208"  # Known revision for Playwright 1.58+
-  fi
-  PW_CACHE_DIR=$(npx --registry="$NPM_MIRROR" playwright inspect browser chromium 2>/dev/null | grep -o 'Cache dir: .*' | sed 's/Cache dir: //' || echo "$HOME/.cache/ms-playwright")
-  CHROMIUM_VERSION="145.0.7632.6"  # Matches Playwright 1.58+ chromium revision
-  CHROMIUM_ZIP="chrome-linux64.zip"
-  CHROMIUM_URL="$NPM_MIRROR/-/binary/chrome-for-testing/${CHROMIUM_VERSION}/linux64/${CHROMIUM_ZIP}"
-  PW_CHROMIUM_DIR="$PW_CACHE_DIR/chromium-${PW_BROWSER_REVISION}"
-  
-  mkdir -p "$PW_CACHE_DIR"
-  
-  if [[ ! -d "$PW_CHROMIUM_DIR" ]]; then
-    info "Downloading Chromium ${CHROMIUM_VERSION} from npmmirror..."
-    curl -fSL --retry 3 --connect-timeout 30 -o "/tmp/$CHROMIUM_ZIP" "$CHROMIUM_URL" \
-      || err "Failed to download Chromium from npmmirror"
-    
-    mkdir -p "$PW_CHROMIUM_DIR"
-    unzip -q "/tmp/$CHROMIUM_ZIP" -d "$PW_CHROMIUM_DIR" \
-      || err "Failed to extract Chromium"
-    rm -f "/tmp/$CHROMIUM_ZIP"
-    
-    # Verify installation
-    if [[ -f "$PW_CHROMIUM_DIR/chrome-linux64/chrome" ]]; then
-      info "Chromium installed successfully in $PW_CHROMIUM_DIR"
-    else
-      err "Chromium extraction failed — chrome binary not found"
-    fi
-  else
-    info "Chromium already installed in $PW_CHROMIUM_DIR — skipping download"
-  fi
+  info "Installing Playwright Chromium via China mirror..."
+  # Use Playwright's own install command with PLAYWRIGHT_DOWNLOAD_HOST for China mirror.
+  # This ensures correct revision, directory structure, and INSTALLATION_COMPLETE marker.
+  PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright" \
+    npx --registry="$NPM_MIRROR" playwright install chromium \
+    || err "Failed to install Playwright Chromium (tried npmmirror mirror)"
 
   # Install Playwright system dependencies (fonts, libs) on Linux
   if [[ "$(uname)" == "Linux" ]]; then
