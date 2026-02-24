@@ -434,6 +434,58 @@ fn install_linux(config: &Config, init_system: InitSystem) -> Result<()> {
     }
 }
 
+/// Check whether lingering is already enabled for the current user.
+#[cfg(target_os = "linux")]
+fn is_linger_enabled() -> bool {
+    // systemd stores per-user linger state as /var/lib/systemd/linger/<username>
+    if let Ok(output) = Command::new("id").args(["-un"]).output() {
+        if output.status.success() {
+            let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !username.is_empty()
+                && Path::new(&format!("/var/lib/systemd/linger/{username}")).exists()
+            {
+                return true;
+            }
+            // Fallback: check via loginctl show-user
+            if let Ok(out) = Command::new("loginctl")
+                .args(["show-user", &username, "--property=Linger"])
+                .output()
+            {
+                return String::from_utf8_lossy(&out.stdout).contains("Linger=yes");
+            }
+        }
+    }
+    false
+}
+
+/// Enable systemd linger for the current user so the user-level systemd instance
+/// persists after all login sessions end (e.g. SSH disconnect).
+#[cfg(target_os = "linux")]
+fn enable_linger_if_needed() {
+    if is_linger_enabled() {
+        return;
+    }
+    match Command::new("loginctl").args(["enable-linger"]).output() {
+        Ok(output) if output.status.success() => {
+            println!("\u{2705} Enabled systemd linger (service survives SSH disconnect)");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "\u{26a0}\u{fe0f}  Could not enable linger automatically: {}",
+                stderr.trim()
+            );
+            eprintln!("   Run manually: loginctl enable-linger $USER");
+            eprintln!("   Without linger, the service will stop when you disconnect SSH.");
+        }
+        Err(err) => {
+            eprintln!("\u{26a0}\u{fe0f}  Could not run loginctl: {err}");
+            eprintln!("   Run manually: loginctl enable-linger $USER");
+            eprintln!("   Without linger, the service will stop when you disconnect SSH.");
+        }
+    }
+}
+
 fn install_linux_systemd(config: &Config) -> Result<()> {
     let file = linux_service_file(config)?;
     if let Some(parent) = file.parent() {
@@ -449,6 +501,13 @@ fn install_linux_systemd(config: &Config) -> Result<()> {
     fs::write(&file, unit)?;
     let _ = run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]));
     let _ = run_checked(Command::new("systemctl").args(["--user", "enable", "zeroclaw.service"]));
+
+    // Enable lingering so the user-level systemd instance (and thus this service)
+    // survives after all login sessions end (e.g. SSH disconnect).
+    // Without linger, systemd kills the entire user slice on last session close,
+    // making Restart=always ineffective.
+    enable_linger_if_needed();
+
     println!("✅ Installed systemd user service: {}", file.display());
     println!("   Start with: zeroclaw service start");
     Ok(())
