@@ -331,6 +331,18 @@ impl LarkChannel {
         format!("{}/im/v1/messages?receive_id_type=chat_id", self.api_base())
     }
 
+
+    fn upload_image_url(&self) -> String {
+        format!("{}/im/v1/images", self.api_base())
+    }
+
+    fn download_image_url(&self, message_id: &str, image_key: &str) -> String {
+        format!(
+            "{}/im/v1/messages/{message_id}/resources/{image_key}?type=image",
+            self.api_base()
+        )
+    }
+
     fn message_reaction_url(&self, message_id: &str) -> String {
         format!("{}/im/v1/messages/{message_id}/reactions", self.api_base())
     }
@@ -388,7 +400,17 @@ impl LarkChannel {
                 }
             };
 
-            if response.status().as_u16() == 401 && !retried {
+            let resp_status = response.status();
+            // Parse body early so we can check both HTTP 401 and Lark business code
+            let resp_body: serde_json::Value = match response.json().await {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!("Lark: add reaction decode failed for {message_id}: {err}");
+                    return;
+                }
+            };
+
+            if !retried && should_refresh_lark_tenant_token(resp_status, &resp_body) {
                 self.invalidate_token().await;
                 token = match self.get_tenant_access_token().await {
                     Ok(new_token) => new_token,
@@ -403,26 +425,15 @@ impl LarkChannel {
                 continue;
             }
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let err_body = response.text().await.unwrap_or_default();
+            if !resp_status.is_success() {
                 tracing::warn!(
-                    "Lark: add reaction failed for {message_id}: status={status}, body={err_body}"
+                    "Lark: add reaction failed for {message_id}: status={resp_status}, body={resp_body}"
                 );
                 return;
             }
-
-            let payload: serde_json::Value = match response.json().await {
-                Ok(v) => v,
-                Err(err) => {
-                    tracing::warn!("Lark: add reaction decode failed for {message_id}: {err}");
-                    return;
-                }
-            };
-
-            let code = payload.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let code = resp_body.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
             if code != 0 {
-                let msg = payload
+                let msg = resp_body
                     .get("msg")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown error");
@@ -597,8 +608,11 @@ impl LarkChannel {
 
                     // Fragment reassembly
                     let sum = if sum == 0 { 1 } else { sum };
-                    let payload: Vec<u8> = if sum == 1 || msg_id.is_empty() || seq_num >= sum {
+                    let payload: Vec<u8> = if sum == 1 || msg_id.is_empty() {
                         frame.payload.clone().unwrap_or_default()
+                    } else if seq_num >= sum {
+                        tracing::warn!("Lark: invalid fragment seq={seq_num} >= sum={sum}, discarding");
+                        continue;
                     } else {
                         let entry = frag_cache.entry(msg_id.clone())
                             .or_insert_with(|| (vec![None; sum], Instant::now()));
@@ -667,7 +681,13 @@ impl LarkChannel {
                             Some(t) => t,
                             None => continue,
                         },
-                        _ => { tracing::debug!("Lark WS: skipping unsupported type '{}'", lark_msg.message_type); continue; }
+                        "image" => {
+                            match extract_image_key(&lark_msg.content) {
+                                Some(key) => format!("[IMAGE:lark_image_key:{key}]"),
+                                None => continue,
+                            }
+                        }
+                        _ => continue,
                     };
 
                     // Strip @_user_N placeholders
@@ -778,6 +798,95 @@ impl LarkChannel {
         *cached = None;
     }
 
+
+    /// Upload an image to Lark and return the `image_key`.
+    async fn upload_image(&self, image_bytes: Vec<u8>, filename: &str) -> anyhow::Result<String> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.upload_image_url();
+        let part = reqwest::multipart::Part::bytes(image_bytes)
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")?;
+        let form = reqwest::multipart::Form::new()
+            .text("image_type", "message")
+            .part("image", part);
+        let resp = self
+            .http_client()
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .multipart(form)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            anyhow::bail!("Lark upload_image failed: status={status}, body={body}");
+        }
+        let code = extract_lark_response_code(&body).unwrap_or(-1);
+        if code != 0 {
+            anyhow::bail!("Lark upload_image failed: code={code}, body={body}");
+        }
+        body.pointer("/data/image_key")
+            .and_then(|k| k.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Lark upload_image: missing image_key in response"))
+    }
+    /// Download an image from a received message.
+    async fn download_image(&self, message_id: &str, image_key: &str) -> anyhow::Result<Vec<u8>> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.download_image_url(message_id, image_key);
+        let resp = self
+            .http_client()
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            anyhow::bail!("Lark download_image failed: status={status}");
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
+    /// Send an image message by image_key.
+    async fn send_image_msg(&self, chat_id: &str, image_key: &str) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.send_message_url();
+        let content = serde_json::json!({ "image_key": image_key }).to_string();
+        let body = serde_json::json!({
+            "receive_id": chat_id,
+            "msg_type": "image",
+            "content": content,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "image after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &response, "image")?;
+        Ok(())
+    }
+    /// Upload a local file or download a URL, then send as image message.
+    async fn send_lark_image(&self, chat_id: &str, target: &str) -> anyhow::Result<()> {
+        let (bytes, filename) = if target.starts_with("http://") || target.starts_with("https://") {
+            let resp = self.http_client().get(target).send().await?;
+            if !resp.status().is_success() {
+                anyhow::bail!("Lark: failed to fetch image URL: {target}");
+            }
+            let name = target.rsplit('/').next().unwrap_or("image.png").to_string();
+            (resp.bytes().await?.to_vec(), name)
+        } else {
+            let path = std::path::Path::new(target);
+            if !path.exists() {
+                anyhow::bail!("Lark: image file not found: {target}");
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("image.png").to_string();
+            (tokio::fs::read(path).await?, name)
+        };
+        let image_key = self.upload_image(bytes, &filename).await?;
+        self.send_image_msg(chat_id, &image_key).await
+    }
     async fn send_text_once(
         &self,
         url: &str,
@@ -865,12 +974,32 @@ impl LarkChannel {
                 Some(t) => t,
                 None => return messages,
             },
-            _ => {
-                tracing::debug!("Lark: skipping unsupported message type: {msg_type}");
-                return messages;
-            }
+            "image" => match extract_image_key(content_str) {
+                Some(key) => format!("[IMAGE:lark_image_key:{key}]"),
+                None => return messages,
+            },
+            _ => return messages,
         };
 
+        // Strip @_user_N placeholders (parity with WS path)
+        let text = strip_at_placeholders(&text);
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return messages;
+        }
+
+        // Group-chat: only respond when explicitly @-mentioned
+        let chat_type = event
+            .pointer("/message/chat_type")
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        let mentions: Vec<serde_json::Value> = event
+            .pointer("/message/mentions")
+            .and_then(|m| serde_json::from_value(m.clone()).ok())
+            .unwrap_or_default();
+        if chat_type == "group" && !should_respond_in_group(&mentions) {
+            return messages;
+        }
         let timestamp = event
             .pointer("/message/create_time")
             .and_then(|t| t.as_str())
@@ -910,13 +1039,21 @@ impl Channel for LarkChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
+        let (text, images) = parse_lark_image_markers(&message.content);
+        for target in &images {
+            if let Err(e) = self.send_lark_image(&message.recipient, target).await {
+                tracing::warn!("Lark: image send failed for {target}: {e}");
+            }
+        }
+        if text.is_empty() {
+            return Ok(());
+        }
         let token = self.get_tenant_access_token().await?;
         let url = self.send_message_url();
-
         let content = serde_json::json!({
             "elements": [{
                 "tag": "markdown",
-                "content": message.content
+                "content": text
             }]
         })
         .to_string();
@@ -925,26 +1062,17 @@ impl Channel for LarkChannel {
             "msg_type": "interactive",
             "content": content,
         });
-
         let (status, response) = self.send_text_once(&url, &token, &body).await?;
-
         if should_refresh_lark_tenant_token(status, &response) {
-            // Token expired/invalid, invalidate and retry once.
             self.invalidate_token().await;
             let new_token = self.get_tenant_access_token().await?;
-            let (retry_status, retry_response) =
-                self.send_text_once(&url, &new_token, &body).await?;
-
-            if should_refresh_lark_tenant_token(retry_status, &retry_response) {
-                anyhow::bail!(
-                    "Lark send failed after token refresh: status={retry_status}, body={retry_response}"
-                );
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            if should_refresh_lark_tenant_token(rs, &rr) {
+                anyhow::bail!("Lark send failed after token refresh: status={rs}, body={rr}");
             }
-
-            ensure_lark_send_success(retry_status, &retry_response, "after token refresh")?;
+            ensure_lark_send_success(rs, &rr, "after token refresh")?;
             return Ok(());
         }
-
         ensure_lark_send_success(status, &response, "without token refresh")?;
         Ok(())
     }
@@ -1059,6 +1187,11 @@ impl LarkChannel {
 // WS helper functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Acknowledgment reaction emoji pool (locale-independent for now).
+/// When per-locale pools are needed, reintroduce locale detection with a
+/// proper library (e.g. `whatlang`) instead of hand-rolled character matching.
+const LARK_ACK_REACTIONS: &[&str] = &["👍", "👌", "💪", "🎉", "❤️"];
+
 fn pick_uniform_index(len: usize) -> usize {
     debug_assert!(len > 0);
     let upper = len as u64;
@@ -1072,193 +1205,11 @@ fn pick_uniform_index(len: usize) -> usize {
     }
 }
 
-fn random_from_pool(pool: &'static [&'static str]) -> &'static str {
-    pool[pick_uniform_index(pool.len())]
-}
-
-fn lark_ack_pool(locale: LarkAckLocale) -> &'static [&'static str] {
-    match locale {
-        LarkAckLocale::ZhCn => LARK_ACK_REACTIONS_ZH_CN,
-        LarkAckLocale::ZhTw => LARK_ACK_REACTIONS_ZH_TW,
-        LarkAckLocale::En => LARK_ACK_REACTIONS_EN,
-        LarkAckLocale::Ja => LARK_ACK_REACTIONS_JA,
-    }
-}
-
-fn map_locale_tag(tag: &str) -> Option<LarkAckLocale> {
-    let normalized = tag.trim().to_ascii_lowercase().replace('-', "_");
-    if normalized.is_empty() {
-        return None;
-    }
-
-    if normalized.starts_with("ja") {
-        return Some(LarkAckLocale::Ja);
-    }
-    if normalized.starts_with("en") {
-        return Some(LarkAckLocale::En);
-    }
-    if normalized.contains("hant")
-        || normalized.starts_with("zh_tw")
-        || normalized.starts_with("zh_hk")
-        || normalized.starts_with("zh_mo")
-    {
-        return Some(LarkAckLocale::ZhTw);
-    }
-    if normalized.starts_with("zh") {
-        return Some(LarkAckLocale::ZhCn);
-    }
-    None
-}
-
-fn find_locale_hint(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Object(map) => {
-            for key in [
-                "locale",
-                "language",
-                "lang",
-                "i18n_locale",
-                "user_locale",
-                "locale_id",
-            ] {
-                if let Some(locale) = map.get(key).and_then(serde_json::Value::as_str) {
-                    return Some(locale.to_string());
-                }
-            }
-
-            for child in map.values() {
-                if let Some(locale) = find_locale_hint(child) {
-                    return Some(locale);
-                }
-            }
-            None
-        }
-        serde_json::Value::Array(items) => {
-            for child in items {
-                if let Some(locale) = find_locale_hint(child) {
-                    return Some(locale);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn detect_locale_from_post_content(content: &str) -> Option<LarkAckLocale> {
-    let parsed = serde_json::from_str::<serde_json::Value>(content).ok()?;
-    let obj = parsed.as_object()?;
-    for key in obj.keys() {
-        if let Some(locale) = map_locale_tag(key) {
-            return Some(locale);
-        }
-    }
-    None
-}
-
-fn is_japanese_kana(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x3040..=0x309F | // Hiragana
-        0x30A0..=0x30FF | // Katakana
-        0x31F0..=0x31FF // Katakana Phonetic Extensions
-    )
-}
-
-fn is_cjk_han(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x3400..=0x4DBF | // CJK Extension A
-        0x4E00..=0x9FFF // CJK Unified Ideographs
-    )
-}
-
-fn is_traditional_only_han(ch: char) -> bool {
-    matches!(
-        ch,
-        '奮' | '鬥'
-            | '強'
-            | '體'
-            | '國'
-            | '臺'
-            | '萬'
-            | '與'
-            | '為'
-            | '這'
-            | '學'
-            | '機'
-            | '開'
-            | '裡'
-    )
-}
-
-fn is_simplified_only_han(ch: char) -> bool {
-    matches!(
-        ch,
-        '奋' | '斗'
-            | '强'
-            | '体'
-            | '国'
-            | '台'
-            | '万'
-            | '与'
-            | '为'
-            | '这'
-            | '学'
-            | '机'
-            | '开'
-            | '里'
-    )
-}
-
-fn detect_locale_from_text(text: &str) -> Option<LarkAckLocale> {
-    if text.chars().any(is_japanese_kana) {
-        return Some(LarkAckLocale::Ja);
-    }
-    if text.chars().any(is_traditional_only_han) {
-        return Some(LarkAckLocale::ZhTw);
-    }
-    if text.chars().any(is_simplified_only_han) {
-        return Some(LarkAckLocale::ZhCn);
-    }
-    if text.chars().any(is_cjk_han) {
-        return Some(LarkAckLocale::ZhCn);
-    }
-    None
-}
-
-fn detect_lark_ack_locale(
-    payload: Option<&serde_json::Value>,
-    fallback_text: &str,
-) -> LarkAckLocale {
-    if let Some(payload) = payload {
-        if let Some(locale) = find_locale_hint(payload).and_then(|hint| map_locale_tag(&hint)) {
-            return locale;
-        }
-
-        let message_content = payload
-            .pointer("/message/content")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| {
-                payload
-                    .pointer("/event/message/content")
-                    .and_then(serde_json::Value::as_str)
-            });
-
-        if let Some(locale) = message_content.and_then(detect_locale_from_post_content) {
-            return locale;
-        }
-    }
-
-    detect_locale_from_text(fallback_text).unwrap_or(LarkAckLocale::En)
-}
-
 fn random_lark_ack_reaction(
-    payload: Option<&serde_json::Value>,
-    fallback_text: &str,
+    _payload: Option<&serde_json::Value>,
+    _fallback_text: &str,
 ) -> &'static str {
-    let locale = detect_lark_ack_locale(payload, fallback_text);
-    random_from_pool(lark_ack_pool(locale))
+    LARK_ACK_REACTIONS[pick_uniform_index(LARK_ACK_REACTIONS.len())]
 }
 
 /// Flatten a Feishu `post` rich-text message to plain text.
@@ -1331,6 +1282,15 @@ fn parse_post_content(content: &str) -> Option<String> {
         Some(result)
     }
 }
+/// Extract `image_key` from a Lark image message content JSON.
+fn extract_image_key(content: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .get("image_key")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
 
 /// Remove `@_user_N` placeholder tokens injected by Feishu in group chats.
 fn strip_at_placeholders(text: &str) -> String {
@@ -1342,7 +1302,7 @@ fn strip_at_placeholders(text: &str) -> String {
             if let Some(after) = rest.strip_prefix("_user_") {
                 let skip =
                     "_user_".len() + after.chars().take_while(|c| c.is_ascii_digit()).count();
-                for _ in 0..=skip {
+                for _ in 0..skip {
                     chars.next();
                 }
                 if chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
@@ -1357,8 +1317,50 @@ fn strip_at_placeholders(text: &str) -> String {
 }
 
 /// In group chats, only respond when the bot is explicitly @-mentioned.
+/// Feishu bot mentions have an empty `user_id` in the `id` object, distinguishing
+/// them from regular user mentions.
 fn should_respond_in_group(mentions: &[serde_json::Value]) -> bool {
-    !mentions.is_empty()
+    mentions.iter().any(|m| {
+        // Bot mentions: id.user_id is empty or absent
+        let user_id = m
+            .pointer("/id/user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        user_id.is_empty()
+    })
+}
+
+/// Extract `[IMAGE:<target>]` markers from outgoing message content.
+/// Returns (cleaned_text, image_targets).
+fn parse_lark_image_markers(message: &str) -> (String, Vec<String>) {
+    let mut cleaned = String::with_capacity(message.len());
+    let mut images = Vec::new();
+    let mut cursor = 0;
+    while cursor < message.len() {
+        let Some(open_rel) = message[cursor..].find('[') else {
+            cleaned.push_str(&message[cursor..]);
+            break;
+        };
+        let open = cursor + open_rel;
+        cleaned.push_str(&message[cursor..open]);
+        let Some(close_rel) = message[open..].find(']') else {
+            cleaned.push_str(&message[open..]);
+            break;
+        };
+        let close = open + close_rel;
+        let marker = &message[open + 1..close];
+        if let Some((kind, target)) = marker.split_once(':') {
+            let target = target.trim();
+            if kind.trim().eq_ignore_ascii_case("IMAGE") && !target.is_empty() {
+                images.push(target.to_string());
+                cursor = close + 1;
+                continue;
+            }
+        }
+        cleaned.push_str(&message[open..=close]);
+        cursor = close + 1;
+    }
+    (cleaned.trim().to_string(), images)
 }
 
 #[cfg(test)]
@@ -1547,13 +1549,29 @@ mod tests {
     }
 
     #[test]
-    fn lark_parse_non_text_message_skipped() {
+    fn lark_parse_image_message_produces_marker() {
         let ch = LarkChannel::new(
-            "id".into(),
-            "secret".into(),
-            "token".into(),
-            None,
-            vec!["*".into()],
+            "id".into(), "secret".into(), "token".into(), None, vec!["*".into()],
+        );
+        let payload = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_user" } },
+                "message": {
+                    "message_type": "image",
+                    "content": "{\"image_key\":\"img_v3_test_key\"}",
+                    "chat_id": "oc_chat"
+                }
+            }
+        });
+        let msgs = ch.parse_event_payload(&payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "[IMAGE:lark_image_key:img_v3_test_key]");
+    }
+    #[test]
+    fn lark_parse_image_message_empty_key_skipped() {
+        let ch = LarkChannel::new(
+            "id".into(), "secret".into(), "token".into(), None, vec!["*".into()],
         );
         let payload = serde_json::json!({
             "header": { "event_type": "im.message.receive_v1" },
@@ -1566,7 +1584,6 @@ mod tests {
                 }
             }
         });
-
         let msgs = ch.parse_event_payload(&payload);
         assert!(msgs.is_empty());
     }
@@ -1865,99 +1882,41 @@ mod tests {
     }
 
     #[test]
-    fn lark_reaction_locale_explicit_language_tags() {
-        assert_eq!(map_locale_tag("zh-CN"), Some(LarkAckLocale::ZhCn));
-        assert_eq!(map_locale_tag("zh_TW"), Some(LarkAckLocale::ZhTw));
-        assert_eq!(map_locale_tag("zh-Hant"), Some(LarkAckLocale::ZhTw));
-        assert_eq!(map_locale_tag("en-US"), Some(LarkAckLocale::En));
-        assert_eq!(map_locale_tag("ja-JP"), Some(LarkAckLocale::Ja));
-        assert_eq!(map_locale_tag("fr-FR"), None);
+    fn random_lark_ack_reaction_returns_from_pool() {
+        let selected = random_lark_ack_reaction(None, "hello");
+        assert!(LARK_ACK_REACTIONS.contains(&selected));
     }
-
     #[test]
-    fn lark_reaction_locale_prefers_explicit_payload_locale() {
-        let payload = serde_json::json!({
-            "sender": {
-                "locale": "ja-JP"
-            },
-            "message": {
-                "content": "{\"text\":\"hello\"}"
-            }
-        });
+    fn parse_lark_image_markers_extracts_images() {
+        let msg = "Here is an image [IMAGE:/tmp/a.png] and text";
+        let (cleaned, images) = parse_lark_image_markers(msg);
+        assert_eq!(cleaned, "Here is an image  and text");
+        assert_eq!(images, vec!["/tmp/a.png"]);
+    }
+    #[test]
+    fn parse_lark_image_markers_url() {
+        let msg = "[IMAGE:https://example.com/img.jpg]";
+        let (cleaned, images) = parse_lark_image_markers(msg);
+        assert!(cleaned.is_empty());
+        assert_eq!(images, vec!["https://example.com/img.jpg"]);
+    }
+    #[test]
+    fn parse_lark_image_markers_no_markers() {
+        let msg = "plain text [BOLD:test]";
+        let (cleaned, images) = parse_lark_image_markers(msg);
+        assert_eq!(cleaned, "plain text [BOLD:test]");
+        assert!(images.is_empty());
+    }
+    #[test]
+    fn extract_image_key_valid() {
         assert_eq!(
-            detect_lark_ack_locale(Some(&payload), "你好，世界"),
-            LarkAckLocale::Ja
+            extract_image_key(r#"{"image_key":"img_v3_abc"}"#),
+            Some("img_v3_abc".to_string())
         );
     }
-
     #[test]
-    fn lark_reaction_locale_unsupported_payload_falls_back_to_text_script() {
-        let payload = serde_json::json!({
-            "sender": {
-                "locale": "fr-FR"
-            },
-            "message": {
-                "content": "{\"text\":\"頑張れ\"}"
-            }
-        });
-        assert_eq!(
-            detect_lark_ack_locale(Some(&payload), "頑張ってください"),
-            LarkAckLocale::Ja
-        );
-    }
-
-    #[test]
-    fn lark_reaction_locale_detects_simplified_and_traditional_text() {
-        assert_eq!(
-            detect_lark_ack_locale(None, "继续奋斗，今天很强"),
-            LarkAckLocale::ZhCn
-        );
-        assert_eq!(
-            detect_lark_ack_locale(None, "繼續奮鬥，今天很強"),
-            LarkAckLocale::ZhTw
-        );
-    }
-
-    #[test]
-    fn lark_reaction_locale_defaults_to_english_for_unsupported_text() {
-        assert_eq!(
-            detect_lark_ack_locale(None, "Bonjour tout le monde"),
-            LarkAckLocale::En
-        );
-    }
-
-    #[test]
-    fn random_lark_ack_reaction_respects_detected_locale_pool() {
-        let payload = serde_json::json!({
-            "sender": {
-                "locale": "zh-CN"
-            }
-        });
-        let selected = random_lark_ack_reaction(Some(&payload), "hello");
-        assert!(LARK_ACK_REACTIONS_ZH_CN.contains(&selected));
-
-        let payload = serde_json::json!({
-            "sender": {
-                "locale": "zh-TW"
-            }
-        });
-        let selected = random_lark_ack_reaction(Some(&payload), "hello");
-        assert!(LARK_ACK_REACTIONS_ZH_TW.contains(&selected));
-
-        let payload = serde_json::json!({
-            "sender": {
-                "locale": "en-US"
-            }
-        });
-        let selected = random_lark_ack_reaction(Some(&payload), "hello");
-        assert!(LARK_ACK_REACTIONS_EN.contains(&selected));
-
-        let payload = serde_json::json!({
-            "sender": {
-                "locale": "ja-JP"
-            }
-        });
-        let selected = random_lark_ack_reaction(Some(&payload), "hello");
-        assert!(LARK_ACK_REACTIONS_JA.contains(&selected));
-    }
+    fn extract_image_key_missing() {
+        assert_eq!(extract_image_key("{}"), None);
+        assert_eq!(extract_image_key("not json"), None);
+}
 }
