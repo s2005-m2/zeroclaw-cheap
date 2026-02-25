@@ -129,7 +129,8 @@ impl VpnControlTool {
             &controller_url,
             SELECTOR_GROUP_NAME,
             None,
-        ).await;
+        )
+        .await;
         if let Some(best) = state.node_manager.select_best_node(&health_results) {
             let best_name = best.name.clone();
             state.node_manager.set_active(&best_name);
@@ -156,9 +157,10 @@ impl VpnControlTool {
             move || {
                 // Best-effort read of current active node for restore-after-probe.
                 // Uses try_read to avoid blocking the health check loop.
-                active_state.try_read().ok().and_then(|g| {
-                    g.node_manager.active_node().map(|n| n.name.clone())
-                })
+                active_state
+                    .try_read()
+                    .ok()
+                    .and_then(|g| g.node_manager.active_node().map(|n| n.name.clone()))
             },
             move |results| {
                 let st = Arc::clone(&health_state);
@@ -277,7 +279,8 @@ impl VpnControlTool {
                 &controller_url,
                 SELECTOR_GROUP_NAME,
                 current_active.as_deref(),
-            ).await;
+            )
+            .await;
             if let Some(best) = state.node_manager.select_best_node(&health_results) {
                 let best_name = best.name.clone();
                 state.node_manager.set_active(&best_name);

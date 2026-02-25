@@ -51,9 +51,9 @@ pub mod schema;
 pub mod screenshot;
 pub mod shell;
 pub mod traits;
-pub mod web_search_tool;
 #[cfg(feature = "vpn")]
 pub mod vpn_control;
+pub mod web_search_tool;
 
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
@@ -71,13 +71,9 @@ pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
 pub use glob_search::GlobSearchTool;
-pub use hardware_board_info::HardwareBoardInfoTool;
-pub use hardware_memory_map::HardwareMemoryMapTool;
-pub use hardware_memory_read::HardwareMemoryReadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
 pub use mcp_bridge::McpBridgeTool;
-pub use mcp_manage::McpManageTool;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_recall::MemoryRecallTool;
 pub use memory_store::MemoryStoreTool;
@@ -93,9 +89,9 @@ pub use shell::ShellTool;
 pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
-pub use web_search_tool::WebSearchTool;
 #[cfg(feature = "vpn")]
 pub use vpn_control::{VpnControlTool, VpnState};
+pub use web_search_tool::WebSearchTool;
 
 use crate::config::{Config, DelegateAgentConfig};
 use crate::memory::Memory;
@@ -310,8 +306,7 @@ pub fn all_tools_with_runtime(
             use crate::vpn::{BypassChecker, NodeManager, VpnProxyBridge};
             use tokio::sync::RwLock;
 
-            let clash_proxy_url = std::env::var("ZEROCLAW_VPN_CLASH_PROXY_URL")
-                .unwrap_or_default();
+            let clash_proxy_url = std::env::var("ZEROCLAW_VPN_CLASH_PROXY_URL").unwrap_or_default();
             let listen_port: u16 = std::env::var("ZEROCLAW_VPN_LISTEN_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -321,7 +316,12 @@ pub fn all_tools_with_runtime(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30);
             let bypass_extra: Vec<String> = std::env::var("ZEROCLAW_VPN_BYPASS_EXTRA")
-                .map(|v| v.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect())
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let vpn_state = Arc::new(RwLock::new(vpn_control::VpnState {
@@ -345,7 +345,6 @@ pub fn all_tools_with_runtime(
             )));
         }
     }
-
 
     // Add delegation tool when agents are configured
     if !agents.is_empty() {

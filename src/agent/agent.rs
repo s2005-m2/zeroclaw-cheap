@@ -11,6 +11,7 @@ use crate::runtime;
 use crate::security::SecurityPolicy;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
+use std::fmt::Write as _;
 use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::time::Instant;
@@ -182,7 +183,10 @@ impl AgentBuilder {
         self
     }
 
-    pub fn mcp_pending_configs(mut self, configs: Vec<zeroclaw_mcp::config::McpServerConfig>) -> Self {
+    pub fn mcp_pending_configs(
+        mut self,
+        configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
+    ) -> Self {
         self.mcp_pending_configs = configs;
         self
     }
@@ -535,11 +539,7 @@ impl Agent {
                             );
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "MCP: failed to connect server '{}': {}",
-                                name,
-                                e
-                            );
+                            tracing::warn!("MCP: failed to connect server '{}': {}", name, e);
                         }
                     }
                 }
@@ -589,10 +589,11 @@ impl Agent {
                                 );
                                 let server_s = sanitize_mcp_text(server, 256);
                                 let uri_s = sanitize_mcp_text(&res.uri, 256);
-                                mcp_context.push_str(&format!(
-                                    "  {}: {} \u{2014} {}\n",
+                                let _ = writeln!(
+                                    mcp_context,
+                                    "  {}: {} \u{2014} {}",
                                     server_s, uri_s, desc
-                                ));
+                                );
                             }
                         }
                         if !prompts.is_empty() {
@@ -604,10 +605,11 @@ impl Agent {
                                 );
                                 let server_s = sanitize_mcp_text(server, 256);
                                 let name_s = sanitize_mcp_text(&prompt.name, 256);
-                                mcp_context.push_str(&format!(
-                                    "  {}: {} \u{2014} {}\n",
+                                let _ = writeln!(
+                                    mcp_context,
+                                    "  {}: {} \u{2014} {}",
                                     server_s, name_s, desc
-                                ));
+                                );
                             }
                         }
                         sys_msg.content.push_str(&mcp_context);

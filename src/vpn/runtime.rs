@@ -21,7 +21,6 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
-
 use super::subscription::ProxyNode;
 
 /// Clash controller API default port (RESTful API for node switching).
@@ -204,12 +203,10 @@ impl ClashRuntime {
             .join(".zeroclaw")
             .join("state")
             .join("vpn");
-        std::fs::create_dir_all(&state_dir)
-            .context("failed to create VPN state directory")?;
+        std::fs::create_dir_all(&state_dir).context("failed to create VPN state directory")?;
 
         let config_path = state_dir.join("clash-config.yaml");
-        std::fs::write(&config_path, config_yaml)
-            .context("failed to write Clash config file")?;
+        std::fs::write(&config_path, config_yaml).context("failed to write Clash config file")?;
 
         // Spawn the clash binary as a child process.
         let child = tokio::process::Command::new(&clash_bin)
@@ -252,11 +249,7 @@ impl ClashRuntime {
         if let Some(ref mut child) = self.child {
             // Attempt graceful kill, then wait.
             child.kill().await.ok();
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                child.wait(),
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
         }
         self.child = None;
         Ok(())

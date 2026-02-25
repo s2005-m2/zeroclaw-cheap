@@ -127,7 +127,11 @@ impl HealthChecker {
     ///
     /// This is a helper for `check_all_via_clash` — it tells Clash to route
     /// traffic through the named node so the next probe measures that node's latency.
-    async fn clash_switch_node(controller_url: &str, group_name: &str, node_name: &str) -> Result<()> {
+    async fn clash_switch_node(
+        controller_url: &str,
+        group_name: &str,
+        node_name: &str,
+    ) -> Result<()> {
         let url = format!("{controller_url}/proxies/{group_name}");
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -342,6 +346,9 @@ mod tests {
         token.cancel();
         handle.await.unwrap();
         let count = call_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(count >= 1, "callback should have been invoked at least once");
+        assert!(
+            count >= 1,
+            "callback should have been invoked at least once"
+        );
     }
 }

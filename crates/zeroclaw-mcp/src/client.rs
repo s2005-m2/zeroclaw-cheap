@@ -131,8 +131,8 @@ impl McpClient {
                 .get("tools")
                 .context("tools/list result missing 'tools' field")?;
 
-            let tools: Vec<McpToolInfo> =
-                serde_json::from_value(tools_value.clone()).context("Failed to parse tools list")?;
+            let tools: Vec<McpToolInfo> = serde_json::from_value(tools_value.clone())
+                .context("Failed to parse tools list")?;
 
             all_tools.extend(tools);
 
@@ -886,6 +886,9 @@ mod tests {
         // Should have collected one tool per page
         assert_eq!(tools.len(), super::MAX_PAGES);
         assert_eq!(tools[0].name, "tool_0");
-        assert_eq!(tools[super::MAX_PAGES - 1].name, format!("tool_{}", super::MAX_PAGES - 1));
+        assert_eq!(
+            tools[super::MAX_PAGES - 1].name,
+            format!("tool_{}", super::MAX_PAGES - 1)
+        );
     }
 }

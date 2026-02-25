@@ -21,7 +21,6 @@ pub struct CachedNodes {
     pub nodes: Vec<ProxyNode>,
 }
 
-
 /// Disk cache for proxy nodes.
 ///
 /// Persistence layer only — no selection or health-check logic.
@@ -66,10 +65,7 @@ impl NodeCache {
         match serde_json::from_str::<CachedNodes>(&data) {
             Ok(cached) => Ok(Some(cached.nodes)),
             Err(e) => {
-                tracing::warn!(
-                    "corrupt node cache at {}, ignoring: {e}",
-                    path.display()
-                );
+                tracing::warn!("corrupt node cache at {}, ignoring: {e}", path.display());
                 Ok(None)
             }
         }
@@ -80,7 +76,10 @@ impl NodeCache {
         let base = directories::BaseDirs::new()
             .map(|d| d.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
-        base.join(".zeroclaw").join("state").join("vpn").join("nodes.json")
+        base.join(".zeroclaw")
+            .join("state")
+            .join("vpn")
+            .join("nodes.json")
     }
 }
 
@@ -104,7 +103,10 @@ impl NodeManager {
     }
 
     /// Select the best (lowest-latency healthy) node.
-    pub fn select_best_node(&self, health_results: &[(String, HealthResult)]) -> Option<&ProxyNode> {
+    pub fn select_best_node(
+        &self,
+        health_results: &[(String, HealthResult)],
+    ) -> Option<&ProxyNode> {
         let mut healthy: Vec<(&String, u64)> = health_results
             .iter()
             .filter(|(_, hr)| hr.status == NodeStatus::Healthy)
@@ -166,9 +168,9 @@ impl NodeManager {
 
 #[cfg(test)]
 mod tests {
+    use super::health::HealthResult;
     use super::*;
     use crate::vpn::subscription::NodeType;
-    use super::health::HealthResult;
     use std::time::Duration;
 
     fn sample_nodes() -> Vec<ProxyNode> {
@@ -355,5 +357,4 @@ mod tests {
         let mgr = NodeManager::new(three_nodes());
         assert_eq!(mgr.all_nodes().len(), 3);
     }
-
 }

@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
-#[cfg(unix)]
-use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
@@ -475,7 +473,7 @@ fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjection
 }
 
 /// Skills loading configuration (`[skills]` section).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct SkillsConfig {
     /// Enable loading and syncing the community open-skills repository.
     /// Default: `false` (opt-in).
@@ -489,16 +487,6 @@ pub struct SkillsConfig {
     /// `full` preserves legacy behavior. `compact` keeps context small and loads skills on demand.
     #[serde(default)]
     pub prompt_injection_mode: SkillsPromptInjectionMode,
-}
-
-impl Default for SkillsConfig {
-    fn default() -> Self {
-        Self {
-            open_skills_enabled: false,
-            open_skills_dir: None,
-            prompt_injection_mode: SkillsPromptInjectionMode::default(),
-        }
-    }
 }
 
 /// Multimodal (image) handling configuration (`[multimodal]` section).
@@ -1871,18 +1859,10 @@ impl Default for HooksConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct BuiltinHooksConfig {
     /// Enable the command-logger hook (logs tool calls for auditing).
     pub command_logger: bool,
-}
-
-impl Default for BuiltinHooksConfig {
-    fn default() -> Self {
-        Self {
-            command_logger: false,
-        }
-    }
 }
 
 // ── Autonomy / Security ──────────────────────────────────────────
@@ -2447,7 +2427,7 @@ pub struct CustomTunnelConfig {
 struct ConfigWrapper<T: ChannelConfig>(std::marker::PhantomData<T>);
 
 impl<T: ChannelConfig> ConfigWrapper<T> {
-    fn new(_: &Option<T>) -> Self {
+    fn new(_: Option<&T>) -> Self {
         Self(std::marker::PhantomData)
     }
 }
@@ -2523,79 +2503,79 @@ impl ChannelsConfig {
     pub fn channels_except_webhook(&self) -> Vec<(Box<dyn super::traits::ConfigHandle>, bool)> {
         vec![
             (
-                Box::new(ConfigWrapper::new(&self.telegram)),
+                Box::new(ConfigWrapper::new(self.telegram.as_ref())),
                 self.telegram.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.discord)),
+                Box::new(ConfigWrapper::new(self.discord.as_ref())),
                 self.discord.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.slack)),
+                Box::new(ConfigWrapper::new(self.slack.as_ref())),
                 self.slack.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.mattermost)),
+                Box::new(ConfigWrapper::new(self.mattermost.as_ref())),
                 self.mattermost.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.imessage)),
+                Box::new(ConfigWrapper::new(self.imessage.as_ref())),
                 self.imessage.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.matrix)),
+                Box::new(ConfigWrapper::new(self.matrix.as_ref())),
                 self.matrix.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.signal)),
+                Box::new(ConfigWrapper::new(self.signal.as_ref())),
                 self.signal.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.whatsapp)),
+                Box::new(ConfigWrapper::new(self.whatsapp.as_ref())),
                 self.whatsapp.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.linq)),
+                Box::new(ConfigWrapper::new(self.linq.as_ref())),
                 self.linq.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.wati)),
+                Box::new(ConfigWrapper::new(self.wati.as_ref())),
                 self.wati.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.nextcloud_talk)),
+                Box::new(ConfigWrapper::new(self.nextcloud_talk.as_ref())),
                 self.nextcloud_talk.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.email)),
+                Box::new(ConfigWrapper::new(self.email.as_ref())),
                 self.email.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.irc)),
+                Box::new(ConfigWrapper::new(self.irc.as_ref())),
                 self.irc.is_some()
             ),
             (
-                Box::new(ConfigWrapper::new(&self.lark)),
+                Box::new(ConfigWrapper::new(self.lark.as_ref())),
                 self.lark.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.feishu)),
+                Box::new(ConfigWrapper::new(self.feishu.as_ref())),
                 self.feishu.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.dingtalk)),
+                Box::new(ConfigWrapper::new(self.dingtalk.as_ref())),
                 self.dingtalk.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.qq)),
+                Box::new(ConfigWrapper::new(self.qq.as_ref())),
                 self.qq.is_some()
             ),
             (
-                Box::new(ConfigWrapper::new(&self.nostr)),
+                Box::new(ConfigWrapper::new(self.nostr.as_ref())),
                 self.nostr.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.clawdtalk)),
+                Box::new(ConfigWrapper::new(self.clawdtalk.as_ref())),
                 self.clawdtalk.is_some(),
             ),
         ]
@@ -2604,7 +2584,7 @@ impl ChannelsConfig {
     pub fn channels(&self) -> Vec<(Box<dyn super::traits::ConfigHandle>, bool)> {
         let mut ret = self.channels_except_webhook();
         ret.push((
-            Box::new(ConfigWrapper::new(&self.webhook)),
+            Box::new(ConfigWrapper::new(self.webhook.as_ref())),
             self.webhook.is_some(),
         ));
         ret
@@ -3670,7 +3650,7 @@ pub(crate) async fn persist_active_workspace_config_dir(config_dir: &Path) -> Re
         );
     }
 
-    sync_directory(&default_config_dir).await?;
+    sync_directory(&default_config_dir)?;
     Ok(())
 }
 
@@ -4507,7 +4487,7 @@ impl Config {
             anyhow::bail!("Failed to atomically replace config file: {e}");
         }
 
-        sync_directory(parent_dir).await?;
+        sync_directory(parent_dir)?;
 
         if had_existing_config {
             let _ = fs::remove_file(&backup_path).await;
@@ -4517,14 +4497,13 @@ impl Config {
     }
 }
 
-async fn sync_directory(path: &Path) -> Result<()> {
+#[allow(clippy::unused_async)]
+fn sync_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        let dir = File::open(path)
-            .await
+        let dir = std::fs::File::open(path)
             .with_context(|| format!("Failed to open directory for fsync: {}", path.display()))?;
         dir.sync_all()
-            .await
             .with_context(|| format!("Failed to fsync directory metadata: {}", path.display()))?;
         return Ok(());
     }
@@ -4817,6 +4796,7 @@ default_temperature = 0.7
             hooks: HooksConfig::default(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
+            mcp: McpConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -4939,7 +4919,7 @@ tool_dispatcher = "xml"
         ));
         fs::create_dir_all(&dir).await.unwrap();
 
-        sync_directory(&dir).await.unwrap();
+        sync_directory(&dir).unwrap();
 
         let _ = fs::remove_dir_all(&dir).await;
     }
@@ -4991,6 +4971,7 @@ tool_dispatcher = "xml"
             hooks: HooksConfig::default(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
+            mcp: McpConfig::default(),
         };
 
         config.save().await.unwrap();

@@ -867,12 +867,10 @@ fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
                 "Mixtral 8x22B".to_string(),
             ),
         ],
-        "novita" => vec![
-            (
-                "minimax/minimax-m2.5".to_string(),
-                "MiniMax M2.5".to_string(),
-            ),
-        ],
+        "novita" => vec![(
+            "minimax/minimax-m2.5".to_string(),
+            "MiniMax M2.5".to_string(),
+        )],
         "together-ai" => vec![
             (
                 "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string(),
@@ -1804,7 +1802,7 @@ fn resolve_interactive_onboarding_mode(
             "  Existing config found at {}. Select setup mode",
             config_path.display()
         ))
-        .items(&options)
+        .items(options)
         .default(1)
         .interact()?;
 
@@ -5618,7 +5616,7 @@ mod tests {
         apply_provider_update(
             &mut config,
             "anthropic".to_string(),
-            "".to_string(),
+            String::new(),
             "claude-sonnet-4-5-20250929".to_string(),
             None,
         );

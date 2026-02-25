@@ -331,7 +331,6 @@ impl LarkChannel {
         format!("{}/im/v1/messages?receive_id_type=chat_id", self.api_base())
     }
 
-
     fn upload_image_url(&self) -> String {
         format!("{}/im/v1/images", self.api_base())
     }
@@ -798,7 +797,6 @@ impl LarkChannel {
         *cached = None;
     }
 
-
     /// Upload an image to Lark and return the `image_key`.
     async fn upload_image(&self, image_bytes: Vec<u8>, filename: &str) -> anyhow::Result<String> {
         let token = self.get_tenant_access_token().await?;
@@ -881,7 +879,11 @@ impl LarkChannel {
             if !path.exists() {
                 anyhow::bail!("Lark: image file not found: {target}");
             }
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("image.png").to_string();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("image.png")
+                .to_string();
             (tokio::fs::read(path).await?, name)
         };
         let image_key = self.upload_image(bytes, &filename).await?;
@@ -1551,7 +1553,11 @@ mod tests {
     #[test]
     fn lark_parse_image_message_produces_marker() {
         let ch = LarkChannel::new(
-            "id".into(), "secret".into(), "token".into(), None, vec!["*".into()],
+            "id".into(),
+            "secret".into(),
+            "token".into(),
+            None,
+            vec!["*".into()],
         );
         let payload = serde_json::json!({
             "header": { "event_type": "im.message.receive_v1" },
@@ -1571,7 +1577,11 @@ mod tests {
     #[test]
     fn lark_parse_image_message_empty_key_skipped() {
         let ch = LarkChannel::new(
-            "id".into(), "secret".into(), "token".into(), None, vec!["*".into()],
+            "id".into(),
+            "secret".into(),
+            "token".into(),
+            None,
+            vec!["*".into()],
         );
         let payload = serde_json::json!({
             "header": { "event_type": "im.message.receive_v1" },
@@ -1918,5 +1928,5 @@ mod tests {
     fn extract_image_key_missing() {
         assert_eq!(extract_image_key("{}"), None);
         assert_eq!(extract_image_key("not json"), None);
-}
+    }
 }

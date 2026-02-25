@@ -9,7 +9,7 @@
 //!
 //! Ref: https://github.com/zeroclaw-labs/zeroclaw/issues/618 (item 7)
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::{Arc, Mutex};
 
 use zeroclaw::agent::agent::Agent;
@@ -181,11 +181,11 @@ Let me know if you need more."#
     };
 
     c.bench_function("xml_parse_single_tool_call", |b| {
-        b.iter(|| dispatcher.parse_response(black_box(&single_tool)))
+        b.iter(|| dispatcher.parse_response(std::hint::black_box(&single_tool)))
     });
 
     c.bench_function("xml_parse_multi_tool_call", |b| {
-        b.iter(|| dispatcher.parse_response(black_box(&multi_tool)))
+        b.iter(|| dispatcher.parse_response(std::hint::black_box(&multi_tool)))
     });
 }
 
@@ -215,7 +215,7 @@ fn bench_native_parsing(c: &mut Criterion) {
     };
 
     c.bench_function("native_parse_tool_calls", |b| {
-        b.iter(|| dispatcher.parse_response(black_box(&response)))
+        b.iter(|| dispatcher.parse_response(std::hint::black_box(&response)))
     });
 }
 
@@ -262,7 +262,7 @@ fn bench_memory_operations(c: &mut Criterion) {
     c.bench_function("memory_recall_top10", |b| {
         b.iter(|| {
             rt.block_on(async {
-                mem.recall(black_box("zeroclaw agent"), 10, None)
+                mem.recall(std::hint::black_box("zeroclaw agent"), 10, None)
                     .await
                     .unwrap()
             })
@@ -294,7 +294,7 @@ fn bench_agent_turn(c: &mut Criterion) {
                     .workspace_dir(std::path::PathBuf::from("/tmp"))
                     .build()
                     .unwrap();
-                agent.turn(black_box("hello")).await.unwrap()
+                agent.turn(std::hint::black_box("hello")).await.unwrap()
             })
         });
     });
@@ -312,7 +312,7 @@ fn bench_agent_turn(c: &mut Criterion) {
                     .workspace_dir(std::path::PathBuf::from("/tmp"))
                     .build()
                     .unwrap();
-                agent.turn(black_box("run tool")).await.unwrap()
+                agent.turn(std::hint::black_box("run tool")).await.unwrap()
             })
         });
     });

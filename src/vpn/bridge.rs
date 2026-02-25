@@ -157,7 +157,9 @@ mod tests {
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&[]);
 
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
 
         let cfg = runtime_proxy_config();
         assert!(cfg.enabled);
@@ -185,7 +187,9 @@ mod tests {
 
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&[]);
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
 
         // Config should now be VPN, not original.
         let mid = runtime_proxy_config();
@@ -205,12 +209,20 @@ mod tests {
         reset_proxy_config();
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&["*.custom.local".to_string()]);
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
         let cfg = runtime_proxy_config();
         // Bypass domains should appear in no_proxy.
         let joined = cfg.no_proxy.join(",");
-        assert!(joined.contains("*.baidu.com"), "missing builtin bypass domain");
-        assert!(joined.contains("*.custom.local"), "missing user bypass domain");
+        assert!(
+            joined.contains("*.baidu.com"),
+            "missing builtin bypass domain"
+        );
+        assert!(
+            joined.contains("*.custom.local"),
+            "missing user bypass domain"
+        );
         assert!(joined.contains("*.cn"), "missing .cn TLD bypass");
         // Cleanup.
         bridge.deactivate().unwrap();
@@ -221,7 +233,9 @@ mod tests {
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&[]);
         assert!(!bridge.is_active());
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
         assert!(bridge.is_active());
         bridge.deactivate().unwrap();
         assert!(!bridge.is_active());
@@ -231,7 +245,9 @@ mod tests {
         reset_proxy_config();
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&[]);
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
         assert_eq!(
             runtime_proxy_config().all_proxy.as_deref(),
             Some("socks5://127.0.0.1:7890")
@@ -260,7 +276,9 @@ mod tests {
         set_runtime_proxy_config(pre);
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&[]);
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
         let cfg = runtime_proxy_config();
         // Existing entries must be preserved.
         assert!(cfg.no_proxy.contains(&"localhost".to_string()));
@@ -276,7 +294,9 @@ mod tests {
         reset_proxy_config();
         let bridge = VpnProxyBridge::new();
         let checker = BypassChecker::new(&[]);
-        bridge.activate("socks5://127.0.0.1:7890", &checker).unwrap();
+        bridge
+            .activate("socks5://127.0.0.1:7890", &checker)
+            .unwrap();
         let err = bridge.activate("socks5://127.0.0.1:9999", &checker);
         assert!(err.is_err());
         // Cleanup.
@@ -303,7 +323,10 @@ mod tests {
         let bypass = "*.baidu.com,*.google.com";
         let merged = merge_no_proxy(&existing, bypass);
         // *.baidu.com should appear only once.
-        let count = merged.iter().filter(|e| e == &&"*.baidu.com".to_string()).count();
+        let count = merged
+            .iter()
+            .filter(|e| e == &&"*.baidu.com".to_string())
+            .count();
         assert_eq!(count, 1);
         assert!(merged.contains(&"*.google.com".to_string()));
         assert!(merged.contains(&"localhost".to_string()));

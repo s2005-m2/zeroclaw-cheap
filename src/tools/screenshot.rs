@@ -173,7 +173,11 @@ impl ScreenshotTool {
                 let size = bytes.len();
                 let mut encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 let truncated = if encoded.len() > MAX_BASE64_BYTES {
-                    encoded.truncate(encoded.floor_char_boundary(MAX_BASE64_BYTES));
+                    let boundary = (0..=MAX_BASE64_BYTES)
+                        .rev()
+                        .find(|&i| encoded.is_char_boundary(i))
+                        .unwrap_or(0);
+                    encoded.truncate(boundary);
                     true
                 } else {
                     false
