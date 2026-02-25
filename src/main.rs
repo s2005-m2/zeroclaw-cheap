@@ -734,6 +734,25 @@ async fn main() -> Result<()> {
     let mut config = Config::load_or_init().await?;
     config.apply_env_overrides();
     observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
+    // Initialize external provider registry from ~/.zeroclaw/providers/
+    {
+        let providers_dir = config
+            .config_path
+            .parent()
+            .map(|p| p.join("providers"))
+            .unwrap_or_else(|| std::path::PathBuf::from(".zeroclaw/providers"));
+        if providers_dir.is_dir() {
+            let result = providers::init_external_registry(providers_dir);
+            if !result.added.is_empty() {
+                tracing::info!("External providers loaded: {:?}", result.added);
+            }
+            if !result.errors.is_empty() {
+                for err in &result.errors {
+                    tracing::warn!("External provider error: {err}");
+                }
+            }
+        }
+    }
     if config.security.otp.enabled {
         let config_dir = config
             .config_path

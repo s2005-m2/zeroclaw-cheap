@@ -146,7 +146,7 @@ impl OpenAiCompatibleProvider {
         )
     }
 
-    fn new_with_options(
+    pub(crate) fn new_with_options(
         name: &str,
         base_url: &str,
         credential: Option<&str>,

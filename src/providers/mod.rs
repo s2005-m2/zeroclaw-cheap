@@ -20,6 +20,7 @@ pub mod anthropic;
 pub mod bedrock;
 pub mod compatible;
 pub mod copilot;
+pub mod external;
 pub mod gemini;
 pub mod ollama;
 pub mod openai;
@@ -41,7 +42,23 @@ use compatible::{AuthStyle, OpenAiCompatibleProvider};
 use reliable::ReliableProvider;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
+static EXTERNAL_REGISTRY: OnceLock<Arc<external::ProviderRegistry>> = OnceLock::new();
+
+/// Initialize the external provider registry from the given providers directory.
+/// Call once at startup (e.g. in main.rs after config is loaded).
+pub fn init_external_registry(providers_dir: PathBuf) -> external::ReloadResult {
+    let registry = external::ProviderRegistry::new(providers_dir);
+    let result = registry.reload();
+    let _ = EXTERNAL_REGISTRY.set(Arc::new(registry));
+    result
+}
+
+/// Get a reference to the global external provider registry (if initialized).
+pub fn external_registry() -> Option<&'static Arc<external::ProviderRegistry>> {
+    EXTERNAL_REGISTRY.get()
+}
 const MAX_API_ERROR_CHARS: usize = 200;
 const MINIMAX_INTL_BASE_URL: &str = "https://api.minimax.io/v1";
 const MINIMAX_CN_BASE_URL: &str = "https://api.minimaxi.com/v1";
@@ -952,6 +969,18 @@ fn create_provider_with_url_and_options(
     .map(|v| String::from_utf8(v.into_bytes()).unwrap_or_default());
     #[allow(clippy::option_as_ref_deref)]
     let key = resolved_credential.as_ref().map(String::as_str);
+    // ── External provider registry check ──────────────────────────
+    if let Some(registry) = external_registry() {
+        if let Some(result) = registry.try_create(name, key) {
+            if api_url.is_some() {
+                tracing::warn!(
+                    "External provider '{}': api_url parameter is ignored (base_url from TOML is used)",
+                    name
+                );
+            }
+            return result;
+        }
+    }
     match name {
         // ── Primary providers (custom implementations) ───────
         "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(key))),

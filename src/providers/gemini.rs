@@ -23,6 +23,8 @@ pub struct GeminiProvider {
     auth_service: Option<AuthService>,
     /// Override profile name for managed auth.
     auth_profile_override: Option<String>,
+    /// Optional base URL override for external/custom Gemini-compatible endpoints.
+    base_url_override: Option<String>,
 }
 
 /// Mutable OAuth token state — supports runtime refresh for long-lived processes.
@@ -408,6 +410,7 @@ impl GeminiProvider {
             oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
             auth_service: None,
             auth_profile_override: None,
+            base_url_override: None,
         }
     }
 
@@ -481,6 +484,22 @@ impl GeminiProvider {
                 None
             },
             auth_profile_override: profile_override,
+            base_url_override: None,
+        }
+    }
+
+    /// Create a minimal Gemini provider with only an API key and a custom base URL.
+    /// Used by the external provider registry for gemini-compatible endpoints.
+    pub fn new_api_key_only(api_key: Option<&str>, base_url: &str) -> Self {
+        let auth = api_key.and_then(Self::normalize_non_empty).map(GeminiAuth::ExplicitKey);
+        Self {
+            auth,
+            oauth_project: Arc::new(tokio::sync::Mutex::new(None)),
+            oauth_cred_paths: Vec::new(),
+            oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
+            auth_service: None,
+            auth_profile_override: None,
+            base_url_override: Some(base_url.trim_end_matches('/').to_string()),
         }
     }
 
@@ -747,6 +766,21 @@ impl GeminiProvider {
         }
     }
 
+    /// Like `build_generate_content_url` but respects `self.base_url_override`.
+    fn build_generate_content_url_with_override(&self, model: &str, auth: &GeminiAuth) -> String {
+        if let Some(ref base) = self.base_url_override {
+            let model_name = Self::format_model_name(model);
+            let url = format!("{base}/{model_name}:generateContent");
+            if auth.is_api_key() {
+                format!("{url}?key={}", auth.api_key_credential())
+            } else {
+                url
+            }
+        } else {
+            Self::build_generate_content_url(model, auth)
+        }
+    }
+
     fn http_client(&self) -> Client {
         crate::config::build_runtime_proxy_client_with_timeouts("provider.gemini", 120, 10)
     }
@@ -941,7 +975,7 @@ impl GeminiProvider {
             },
         };
 
-        let url = Self::build_generate_content_url(model, auth);
+        let url = self.build_generate_content_url_with_override(model, auth);
 
         let mut response = self
             .build_generate_content_request(
@@ -1233,13 +1267,12 @@ impl Provider for GeminiProvider {
                 return Ok(());
             }
 
+            let base = self.base_url_override.as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
             let url = if auth.is_api_key() {
-                format!(
-                    "https://generativelanguage.googleapis.com/v1beta/models?key={}",
-                    auth.api_key_credential()
-                )
+                format!("{base}/models?key={}", auth.api_key_credential())
             } else {
-                "https://generativelanguage.googleapis.com/v1beta/models".to_string()
+                format!("{base}/models")
             };
 
             self.http_client()
@@ -1276,6 +1309,7 @@ mod tests {
             oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
             auth_service: None,
             auth_profile_override: None,
+            base_url_override: None,
         }
     }
 

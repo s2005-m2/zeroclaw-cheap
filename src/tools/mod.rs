@@ -45,6 +45,7 @@ pub mod memory_store;
 pub mod model_routing_config;
 pub mod pdf_read;
 pub mod proxy_config;
+pub mod provider_reload;
 pub mod pushover;
 pub mod schedule;
 pub mod schema;
@@ -80,6 +81,7 @@ pub use memory_store::MemoryStoreTool;
 pub use model_routing_config::ModelRoutingConfigTool;
 pub use pdf_read::PdfReadTool;
 pub use proxy_config::ProxyConfigTool;
+pub use provider_reload::ProviderReloadTool;
 pub use pushover::PushoverTool;
 pub use schedule::ScheduleTool;
 #[allow(unused_imports)]
@@ -233,6 +235,11 @@ pub fn all_tools_with_runtime(
             workspace_dir.to_path_buf(),
         )),
     ];
+
+    // Conditionally register external provider reload tool
+    if crate::providers::external_registry().is_some() {
+        tool_arcs.push(Arc::new(ProviderReloadTool::new()));
+    }
 
     if browser_config.enabled {
         // Add legacy browser_open tool for simple URL opening

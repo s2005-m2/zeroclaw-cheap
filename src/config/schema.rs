@@ -538,6 +538,10 @@ pub struct SkillsConfig {
     /// `full` preserves legacy behavior. `compact` keeps context small and loads skills on demand.
     #[serde(default)]
     pub prompt_injection_mode: SkillsPromptInjectionMode,
+    /// Skip the built-in security audit when installing skills.
+    /// Default: `false` (audit always runs). Set to `true` only on fully trusted devices.
+    #[serde(default)]
+    pub skip_security_audit: bool,
 }
 
 /// Multimodal (image) handling configuration (`[multimodal]` section).
@@ -4241,6 +4245,22 @@ impl Config {
             }
         }
 
+        // Skip security audit flag: ZEROCLAW_SKIP_SECURITY_AUDIT
+        if let Ok(flag) = std::env::var("ZEROCLAW_SKIP_SECURITY_AUDIT") {
+            if !flag.trim().is_empty() {
+                match flag.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" | "yes" | "on" => {
+                        self.skills.skip_security_audit = true;
+                        tracing::warn!("Security audit for skills is DISABLED \u{2014} device is fully trusted by ZeroClaw");
+                    }
+                    "0" | "false" | "no" | "off" => self.skills.skip_security_audit = false,
+                    _ => tracing::warn!(
+                        "Ignoring invalid ZEROCLAW_SKIP_SECURITY_AUDIT (valid: 1|0|true|false|yes|no|on|off)"
+                    ),
+                }
+            }
+        }
+
         // Gateway port: ZEROCLAW_GATEWAY_PORT or PORT
         if let Ok(port_str) =
             std::env::var("ZEROCLAW_GATEWAY_PORT").or_else(|_| std::env::var("PORT"))
@@ -4597,6 +4617,7 @@ mod tests {
         assert!((c.default_temperature - 0.7).abs() < f64::EPSILON);
         assert!(c.api_key.is_none());
         assert!(!c.skills.open_skills_enabled);
+        assert!(!c.skills.skip_security_audit);
         assert_eq!(
             c.skills.prompt_injection_mode,
             SkillsPromptInjectionMode::Full
@@ -7156,7 +7177,7 @@ require_otp_to_resume = true
         assert!(err.to_string().contains("gated_domains"));
     }
 
-    #[test]
+    #[tokio::test]
     async fn security_validation_rejects_unknown_domain_category() {
         let mut config = Config::default();
         config.security.otp.gated_domain_categories = vec!["not_real".into()];
@@ -7167,7 +7188,7 @@ require_otp_to_resume = true
         assert!(err.to_string().contains("gated_domain_categories"));
     }
 
-    #[test]
+    #[tokio::test]
     async fn security_validation_rejects_zero_token_ttl() {
         let mut config = Config::default();
         config.security.otp.token_ttl_secs = 0;
@@ -7176,5 +7197,44 @@ require_otp_to_resume = true
             .validate()
             .expect_err("expected ttl validation failure");
         assert!(err.to_string().contains("token_ttl_secs"));
+    }
+
+    #[test]
+    async fn test_skills_config_default_skip_audit_false() {
+        assert!(!SkillsConfig::default().skip_security_audit);
+    }
+
+    #[tokio::test]
+    async fn test_skip_security_audit_parses_true() {
+        let toml_str = r#"
+[skills]
+skip_security_audit = true
+"#;
+        let config: Config = toml::from_str(toml_str).expect("parse toml");
+        assert!(config.skills.skip_security_audit);
+    }
+
+    #[tokio::test]
+    async fn test_skip_security_audit_defaults_false() {
+        let toml_str = r#"
+[skills]
+open_skills_enabled = false
+"#;
+        let config: Config = toml::from_str(toml_str).expect("parse toml");
+        assert!(!config.skills.skip_security_audit);
+    }
+
+    #[tokio::test]
+    async fn test_skip_security_audit_env_override() {
+        let _env_guard = env_override_lock().await;
+        let mut config = Config::default();
+        assert!(!config.skills.skip_security_audit);
+
+        std::env::set_var("ZEROCLAW_SKIP_SECURITY_AUDIT", "true");
+        config.apply_env_overrides();
+
+        assert!(config.skills.skip_security_audit);
+
+        std::env::remove_var("ZEROCLAW_SKIP_SECURITY_AUDIT");
     }
 }
