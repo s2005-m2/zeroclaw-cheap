@@ -322,11 +322,16 @@ pub fn all_tools_with_runtime(
                 .unwrap_or(vpn_cfg.health_check_interval_secs);
             let mut bypass_extra: Vec<String> = vpn_cfg.bypass_extra.clone();
             if let Ok(env_bypass) = std::env::var("ZEROCLAW_VPN_BYPASS_EXTRA") {
-                bypass_extra = env_bypass
+                let env_domains: Vec<String> = env_bypass
                     .split(',')
                     .map(|s| s.trim().to_owned())
                     .filter(|s| !s.is_empty())
                     .collect();
+                for domain in env_domains {
+                    if !bypass_extra.iter().any(|d| d.eq_ignore_ascii_case(&domain)) {
+                        bypass_extra.push(domain);
+                    }
+                }
             }
 
             let vpn_state = Arc::new(RwLock::new(vpn_control::VpnState {
