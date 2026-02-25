@@ -234,7 +234,13 @@ fn sanitize_mcp_text(s: &str, max_len: usize) -> String {
     let truncated: String = s.chars().take(max_len).collect();
     let cleaned: String = truncated
         .chars()
-        .map(|c| if c.is_control() && c != ' ' && c != '\t' && c != '\n' { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() && c != ' ' && c != '\t' && c != '\n' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     // Neutralize system prompt boundary markers
     let re = Regex::new(r"(?i)(\[/?system\]|</?system>)").unwrap();
@@ -522,29 +528,48 @@ impl Agent {
             // Inject MCP resources and prompts into system prompt
             let resources = registry.get_all_resources().await;
             let prompts = registry.get_all_prompts().await;
-            if !resources.is_empty() || !prompts.is_empty() {
-                let mut mcp_context = String::new();
-                if !resources.is_empty() {
-                    mcp_context.push_str("\n[MCP Resources]\n");
-                    for (server, res) in &resources {
-                        let desc = sanitize_mcp_text(res.description.as_deref().unwrap_or(""), 256);
-                        let server_s = sanitize_mcp_text(server, 256);
-                        let uri_s = sanitize_mcp_text(&res.uri, 256);
-                        mcp_context.push_str(&format!("  {}: {} — {}\n", server_s, uri_s, desc));
+            if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {
+                if sys_msg.role == "system" {
+                    // Strip previous MCP context to prevent accumulation across turns
+                    if let Some(start) = sys_msg
+                        .content
+                        .find("\n[MCP Resources]\n")
+                        .or_else(|| sys_msg.content.find("\n[MCP Prompts]\n"))
+                    {
+                        sys_msg.content.truncate(start);
                     }
-                }
-                if !prompts.is_empty() {
-                    mcp_context.push_str("\n[MCP Prompts]\n");
-                    for (server, prompt) in &prompts {
-                        let desc = sanitize_mcp_text(prompt.description.as_deref().unwrap_or(""), 256);
-                        let server_s = sanitize_mcp_text(server, 256);
-                        let name_s = sanitize_mcp_text(&prompt.name, 256);
-                        mcp_context
-                            .push_str(&format!("  {}: {} — {}\n", server_s, name_s, desc));
-                    }
-                }
-                if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {
-                    if sys_msg.role == "system" {
+                    if !resources.is_empty() || !prompts.is_empty() {
+                        let mut mcp_context = String::new();
+                        if !resources.is_empty() {
+                            mcp_context.push_str("\n[MCP Resources]\n");
+                            for (server, res) in &resources {
+                                let desc = sanitize_mcp_text(
+                                    res.description.as_deref().unwrap_or(""),
+                                    256,
+                                );
+                                let server_s = sanitize_mcp_text(server, 256);
+                                let uri_s = sanitize_mcp_text(&res.uri, 256);
+                                mcp_context.push_str(&format!(
+                                    "  {}: {} \u{2014} {}\n",
+                                    server_s, uri_s, desc
+                                ));
+                            }
+                        }
+                        if !prompts.is_empty() {
+                            mcp_context.push_str("\n[MCP Prompts]\n");
+                            for (server, prompt) in &prompts {
+                                let desc = sanitize_mcp_text(
+                                    prompt.description.as_deref().unwrap_or(""),
+                                    256,
+                                );
+                                let server_s = sanitize_mcp_text(server, 256);
+                                let name_s = sanitize_mcp_text(&prompt.name, 256);
+                                mcp_context.push_str(&format!(
+                                    "  {}: {} \u{2014} {}\n",
+                                    server_s, name_s, desc
+                                ));
+                            }
+                        }
                         sys_msg.content.push_str(&mcp_context);
                     }
                 }

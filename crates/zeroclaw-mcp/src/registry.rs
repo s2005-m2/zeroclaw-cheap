@@ -17,7 +17,7 @@ use crate::types::{McpPrompt, McpResource, McpToolCallResult, McpToolInfo};
 
 /// Internal state for a connected MCP server
 struct McpServerState {
-    client: tokio::sync::Mutex<McpClient>,
+    client: Arc<tokio::sync::Mutex<McpClient>>,
     tools: Vec<McpToolInfo>,
     #[allow(dead_code)]
     config: McpServerConfig,
@@ -89,7 +89,10 @@ impl McpRegistry {
             tools.len()
         );
 
-        self.validate_tools(&tools, &server_name).await?;
+        if let Err(e) = self.validate_tools(&tools, &server_name).await {
+            let _ = client.close().await;
+            return Err(e);
+        }
 
         let mut servers = self.servers.write().await;
         let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
@@ -108,7 +111,7 @@ impl McpRegistry {
         servers.insert(
             server_name.clone(),
             McpServerState {
-                client: tokio::sync::Mutex::new(client),
+                client: Arc::new(tokio::sync::Mutex::new(client)),
                 tools: tools.clone(),
                 config,
             },
@@ -153,7 +156,7 @@ impl McpRegistry {
         servers.insert(
             name.clone(),
             McpServerState {
-                client: tokio::sync::Mutex::new(client),
+                client: Arc::new(tokio::sync::Mutex::new(client)),
                 tools: tools.clone(),
                 config,
             },
@@ -169,12 +172,13 @@ impl McpRegistry {
     async fn validate_tools(&self, tools: &[McpToolInfo], server_name: &str) -> Result<()> {
         for tool in tools {
             if tool.name.is_empty() {
-                anyhow::bail!(
-                    "MCP server '{}' has a tool with an empty name",
-                    server_name
-                );
+                anyhow::bail!("MCP server '{}' has a tool with an empty name", server_name);
             }
-            if !tool.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            if !tool
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 anyhow::bail!(
                     "MCP server '{}' tool '{}' contains invalid characters (allowed: a-zA-Z0-9_-)",
                     server_name,
@@ -287,12 +291,15 @@ impl McpRegistry {
             tool_name, server_name
         );
 
-        let servers = self.servers.read().await;
-        let server = servers
-            .get(server_name)
-            .with_context(|| format!("MCP server '{}' not found", server_name))?;
+        let client = {
+            let servers = self.servers.read().await;
+            let server = servers
+                .get(server_name)
+                .with_context(|| format!("MCP server '{}' not found", server_name))?;
+            Arc::clone(&server.client)
+        }; // read lock released here
 
-        let mut client = server.client.lock().await;
+        let mut client = client.lock().await;
         client.call_tool(tool_name, args).await.with_context(|| {
             format!(
                 "Failed to call tool '{}' on server '{}'",
@@ -303,10 +310,17 @@ impl McpRegistry {
 
     /// Get all resources from all connected servers
     pub async fn get_all_resources(&self) -> Vec<(String, McpResource)> {
-        let servers = self.servers.read().await;
+        let server_clients: Vec<(String, Arc<tokio::sync::Mutex<McpClient>>)> = {
+            let servers = self.servers.read().await;
+            servers
+                .iter()
+                .map(|(name, state)| (name.clone(), Arc::clone(&state.client)))
+                .collect()
+        }; // read lock released here
+
         let mut all_resources = Vec::new();
-        for (server_name, state) in servers.iter() {
-            let mut client = state.client.lock().await;
+        for (server_name, client) in server_clients {
+            let mut client = client.lock().await;
             match client.list_resources().await {
                 Ok(resources) => {
                     for resource in resources {
@@ -327,10 +341,17 @@ impl McpRegistry {
 
     /// Get all prompts from all connected servers
     pub async fn get_all_prompts(&self) -> Vec<(String, McpPrompt)> {
-        let servers = self.servers.read().await;
+        let server_clients: Vec<(String, Arc<tokio::sync::Mutex<McpClient>>)> = {
+            let servers = self.servers.read().await;
+            servers
+                .iter()
+                .map(|(name, state)| (name.clone(), Arc::clone(&state.client)))
+                .collect()
+        }; // read lock released here
+
         let mut all_prompts = Vec::new();
-        for (server_name, state) in servers.iter() {
-            let mut client = state.client.lock().await;
+        for (server_name, client) in server_clients {
+            let mut client = client.lock().await;
             match client.list_prompts().await {
                 Ok(prompts) => {
                     for prompt in prompts {

@@ -238,11 +238,12 @@ impl Drop for StdioTransport {
         if let Some(task) = self.stderr_task.take() {
             task.abort();
         }
-        // Ensure cleanup on drop
-        if self.child.try_wait().unwrap().is_some() {
-            // Process already exited, nothing to do
-        } else {
-            let _ = self.child.start_kill();
+        // Ensure cleanup on drop — use match instead of unwrap to prevent panic
+        match self.child.try_wait() {
+            Ok(Some(_)) => { /* Process already exited, nothing to do */ }
+            _ => {
+                let _ = self.child.start_kill();
+            }
         }
     }
 }
