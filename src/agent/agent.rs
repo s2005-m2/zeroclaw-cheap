@@ -36,6 +36,7 @@ pub struct Agent {
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
+    mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
 }
 
 pub struct AgentBuilder {
@@ -57,6 +58,7 @@ pub struct AgentBuilder {
     classification_config: Option<crate::config::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
+    mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
 }
 
 impl AgentBuilder {
@@ -80,6 +82,7 @@ impl AgentBuilder {
             classification_config: None,
             available_hints: None,
             mcp_registry: None,
+            mcp_pending_configs: Vec::new(),
         }
     }
 
@@ -179,6 +182,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn mcp_pending_configs(mut self, configs: Vec<zeroclaw_mcp::config::McpServerConfig>) -> Self {
+        self.mcp_pending_configs = configs;
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -222,6 +230,7 @@ impl AgentBuilder {
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             mcp_registry: self.mcp_registry,
+            mcp_pending_configs: self.mcp_pending_configs,
         })
     }
 }
@@ -305,7 +314,7 @@ impl Agent {
         );
 
         // Wire MCP if enabled
-        let mcp_registry = if config.mcp.enabled {
+        let (mcp_registry, mcp_pending_configs) = if config.mcp.enabled {
             let config_path = config.mcp.config_path.as_deref().unwrap_or(".mcp.json");
             let mcp_json_path = config.workspace_dir.join(config_path);
 
@@ -317,27 +326,29 @@ impl Agent {
                     builtin_names,
                 ));
 
-                // Log configured servers (actual connection happens lazily or via mcp_manage tool)
-                match zeroclaw_mcp::config::load_mcp_configs(Some(&mcp_json_path)) {
+                // Parse configs now, connect async on first turn()
+                let pending = match zeroclaw_mcp::config::parse_mcp_config(&mcp_json_path) {
                     Ok(configs) => {
-                        for server_config in configs {
+                        for c in &configs {
                             tracing::info!(
-                                "MCP: server '{}' configured (connect on first use)",
-                                server_config.name
+                                "MCP: server '{}' configured (will connect on first turn)",
+                                c.name
                             );
                         }
+                        configs
                     }
                     Err(e) => {
                         tracing::warn!("Failed to load MCP config from {:?}: {}", mcp_json_path, e);
+                        Vec::new()
                     }
-                }
-                Some(registry)
+                };
+                (Some(registry), pending)
             } else {
                 tracing::debug!("No .mcp.json found at {:?}, MCP disabled", mcp_json_path);
-                None
+                (None, Vec::new())
             }
         } else {
-            None
+            (None, Vec::new())
         };
 
         let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
@@ -395,6 +406,9 @@ impl Agent {
 
         if let Some(registry) = mcp_registry {
             builder = builder.mcp_registry(registry);
+        }
+        if !mcp_pending_configs.is_empty() {
+            builder = builder.mcp_pending_configs(mcp_pending_configs);
         }
 
         builder.build()
@@ -506,6 +520,32 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        // Connect pending MCP servers on first turn (deferred from sync from_config)
+        if !self.mcp_pending_configs.is_empty() {
+            if let Some(ref registry) = self.mcp_registry {
+                let pending = std::mem::take(&mut self.mcp_pending_configs);
+                for server_config in pending {
+                    let name = server_config.name.clone();
+                    match registry.add_server(server_config).await {
+                        Ok(tools) => {
+                            tracing::info!(
+                                "MCP: server '{}' connected with {} tools",
+                                name,
+                                tools.len()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "MCP: failed to connect server '{}': {}",
+                                name,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Snapshot MCP tools if registry is present
         if let Some(ref registry) = self.mcp_registry {
             // Remove previous MCP bridge tools (names start with "mcp_")
