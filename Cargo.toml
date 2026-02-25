@@ -185,6 +185,9 @@ wa-rs-proto = { version = "0.2", optional = true, default-features = false }
 wa-rs-ureq-http = { version = "0.2", optional = true }
 wa-rs-tokio-transport = { version = "0.2", optional = true, default-features = false }
 
+# VPN proxy support — subconverter for Clash subscription parsing
+subconverter = { version = "0.2.34", optional = true, default-features = false }
+
 # Raspberry Pi GPIO / Landlock (Linux only) — target-specific to avoid compile failure on macOS
 [target.'cfg(target_os = "linux")'.dependencies]
 rppal = { version = "0.22", optional = true }
@@ -223,6 +226,8 @@ memory-lancedb = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:fut
 local-transcription = ["dep:sherpa-rs", "dep:hound"]
 # whatsapp-web = Native WhatsApp Web client with custom rusqlite storage backend
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost"]
+# vpn = Embedded VPN proxy via external clash process + subconverter
+vpn = ["dep:subconverter"]
 
 [profile.release]
 opt-level = "z"      # Optimize for size

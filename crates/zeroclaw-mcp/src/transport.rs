@@ -4,13 +4,14 @@
 //! Currently supports stdio-based transport using newline-delimited JSON framing.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::jsonrpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
@@ -40,6 +41,7 @@ pub struct StdioTransport {
     child: Child,
     stdin: Option<tokio::process::ChildStdin>,
     stdout: Option<BufReader<tokio::process::ChildStdout>>,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl StdioTransport {
@@ -73,12 +75,36 @@ impl StdioTransport {
         let stdout = child.stdout.take().context("Failed to open stdout")?;
         let stdout_reader = BufReader::new(stdout);
 
+        // Spawn a background task to drain stderr and prevent pipe buffer deadlock
+        let stderr_task = if let Some(stderr) = child.stderr.take() {
+            let mut reader = BufReader::new(stderr);
+            Some(tokio::spawn(async move {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break, // EOF
+                        Ok(_) => {
+                            debug!("MCP stderr: {}", line.trim());
+                        }
+                        Err(e) => {
+                            debug!("MCP stderr read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         debug!("MCP server spawned successfully");
 
         Ok(Self {
             child,
             stdin: Some(stdin),
             stdout: Some(stdout_reader),
+            stderr_task,
         })
     }
 
@@ -166,23 +192,39 @@ impl McpTransport for StdioTransport {
         // Close stdout reader
         self.stdout = None;
 
-        // Kill the child process if still running
-        match self.child.kill().await {
-            Ok(_) => {
-                info!("MCP server process killed successfully");
-            }
-            Err(e) => {
-                error!("Failed to kill MCP server process: {}", e);
-            }
+        // Abort stderr drain task
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
         }
 
-        // Wait for process to exit
-        match self.child.wait().await {
-            Ok(status) => {
-                info!("MCP server exited with status: {}", status);
+        // Give the process a chance to exit gracefully after stdin EOF
+        match tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await {
+            Ok(Ok(status)) => {
+                info!("MCP server exited gracefully with status: {}", status);
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!("Failed to wait for MCP server: {}", e);
+            }
+            Err(_) => {
+                // Timeout expired — force kill
+                warn!("MCP server did not exit within 3s, killing");
+                match self.child.kill().await {
+                    Ok(_) => {
+                        info!("MCP server process killed successfully");
+                    }
+                    Err(e) => {
+                        error!("Failed to kill MCP server process: {}", e);
+                    }
+                }
+                // Wait for process to fully exit after kill
+                match self.child.wait().await {
+                    Ok(status) => {
+                        info!("MCP server exited with status: {}", status);
+                    }
+                    Err(e) => {
+                        error!("Failed to wait for MCP server after kill: {}", e);
+                    }
+                }
             }
         }
 
@@ -192,6 +234,10 @@ impl McpTransport for StdioTransport {
 
 impl Drop for StdioTransport {
     fn drop(&mut self) {
+        // Abort stderr drain task to prevent leaked task
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
+        }
         // Ensure cleanup on drop
         if self.child.try_wait().unwrap().is_some() {
             // Process already exited, nothing to do

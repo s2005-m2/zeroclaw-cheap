@@ -52,6 +52,8 @@ pub mod screenshot;
 pub mod shell;
 pub mod traits;
 pub mod web_search_tool;
+#[cfg(feature = "vpn")]
+pub mod vpn_control;
 
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
@@ -92,6 +94,8 @@ pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
 pub use web_search_tool::WebSearchTool;
+#[cfg(feature = "vpn")]
+pub use vpn_control::{VpnControlTool, VpnState};
 
 use crate::config::{Config, DelegateAgentConfig};
 use crate::memory::Memory;
@@ -296,6 +300,52 @@ pub fn all_tools_with_runtime(
             )));
         }
     }
+
+    #[cfg(feature = "vpn")]
+    {
+        let vpn_enabled = std::env::var("ZEROCLAW_VPN_ENABLED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if vpn_enabled {
+            use crate::vpn::{BypassChecker, NodeManager, VpnProxyBridge};
+            use tokio::sync::RwLock;
+
+            let clash_proxy_url = std::env::var("ZEROCLAW_VPN_CLASH_PROXY_URL")
+                .unwrap_or_default();
+            let listen_port: u16 = std::env::var("ZEROCLAW_VPN_LISTEN_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7890);
+            let health_interval: u64 = std::env::var("ZEROCLAW_VPN_HEALTH_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30);
+            let bypass_extra: Vec<String> = std::env::var("ZEROCLAW_VPN_BYPASS_EXTRA")
+                .map(|v| v.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default();
+
+            let vpn_state = Arc::new(RwLock::new(vpn_control::VpnState {
+                runtime: None,
+                node_manager: NodeManager::new(vec![]),
+                bypass_checker: BypassChecker::new(&bypass_extra),
+                bridge: VpnProxyBridge::new(),
+                health_cancel: None,
+                last_health: vec![],
+                subscription_url: if clash_proxy_url.is_empty() {
+                    None
+                } else {
+                    Some(clash_proxy_url)
+                },
+                listen_port,
+                health_check_interval_secs: health_interval,
+            }));
+            tool_arcs.push(Arc::new(vpn_control::VpnControlTool::new(
+                security.clone(),
+                vpn_state,
+            )));
+        }
+    }
+
 
     // Add delegation tool when agents are configured
     if !agents.is_empty() {

@@ -69,6 +69,8 @@ pub(crate) mod skills;
 pub mod tools;
 pub(crate) mod tunnel;
 pub(crate) mod util;
+#[cfg(feature = "vpn")]
+pub mod vpn;
 
 pub use config::Config;
 

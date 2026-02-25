@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use anyhow::{Context, Result};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::jsonrpc::{JsonRpcNotification, JsonRpcRequest, RequestId};
 use crate::transport::McpTransport;
@@ -13,6 +13,9 @@ use crate::types::{
     McpPromptMessage, McpResource, McpResourceContent, McpToolCallParams, McpToolCallResult,
     McpToolInfo, ServerCapabilities,
 };
+
+/// Maximum number of pagination pages to fetch before stopping (safety guard).
+const MAX_PAGES: usize = 100;
 
 pub struct McpClient {
     transport: Box<dyn McpTransport>,
@@ -92,41 +95,66 @@ impl McpClient {
     pub async fn list_tools(&mut self) -> Result<Vec<McpToolInfo>> {
         debug!("Requesting tools list");
 
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: RequestId::Number(self.next_request_id()),
-            method: "tools/list".to_string(),
-            params: None,
-        };
+        let mut all_tools = Vec::new();
+        let mut cursor: Option<String> = None;
 
-        self.transport
-            .send(&request)
-            .await
-            .context("Failed to send tools/list request")?;
+        for _page in 0..MAX_PAGES {
+            let params = cursor.as_ref().map(|c| serde_json::json!({"cursor": c}));
 
-        let response = self
-            .transport
-            .receive()
-            .await
-            .context("Failed to receive tools/list response")?;
+            let request = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: RequestId::Number(self.next_request_id()),
+                method: "tools/list".to_string(),
+                params,
+            };
 
-        if let Some(error) = response.error {
-            anyhow::bail!("tools/list failed: {}", error.message);
+            self.transport
+                .send(&request)
+                .await
+                .context("Failed to send tools/list request")?;
+
+            let response = self
+                .transport
+                .receive()
+                .await
+                .context("Failed to receive tools/list response")?;
+
+            if let Some(error) = response.error {
+                anyhow::bail!("tools/list failed: {}", error.message);
+            }
+
+            let result_value = response
+                .result
+                .context("tools/list response missing result")?;
+
+            let tools_value = result_value
+                .get("tools")
+                .context("tools/list result missing 'tools' field")?;
+
+            let tools: Vec<McpToolInfo> =
+                serde_json::from_value(tools_value.clone()).context("Failed to parse tools list")?;
+
+            all_tools.extend(tools);
+
+            cursor = result_value
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            if cursor.is_none() {
+                break;
+            }
         }
 
-        let result_value = response
-            .result
-            .context("tools/list response missing result")?;
+        if cursor.is_some() {
+            warn!(
+                "Pagination limit reached (MAX_PAGES={}), results may be incomplete",
+                MAX_PAGES
+            );
+        }
 
-        let tools_value = result_value
-            .get("tools")
-            .context("tools/list result missing 'tools' field")?;
-
-        let tools: Vec<McpToolInfo> =
-            serde_json::from_value(tools_value.clone()).context("Failed to parse tools list")?;
-
-        debug!("Retrieved {} tools", tools.len());
-        Ok(tools)
+        debug!("Retrieved {} tools", all_tools.len());
+        Ok(all_tools)
     }
 
     pub async fn call_tool(
@@ -186,42 +214,53 @@ impl McpClient {
     /// List available resources
     pub async fn list_resources(&mut self) -> Result<Vec<McpResource>> {
         debug!("Requesting resources list");
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: RequestId::Number(self.next_request_id()),
-            method: "resources/list".to_string(),
-            params: None,
-        };
-
-        self.transport
-            .send(&request)
-            .await
-            .context("Failed to send resources/list request")?;
-
-        let response = self
-            .transport
-            .receive()
-            .await
-            .context("Failed to receive resources/list response")?;
-
-        if let Some(error) = response.error {
-            anyhow::bail!("resources/list failed: {}", error.message);
+        let mut all_resources = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _page in 0..MAX_PAGES {
+            let params = cursor.as_ref().map(|c| serde_json::json!({"cursor": c}));
+            let request = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: RequestId::Number(self.next_request_id()),
+                method: "resources/list".to_string(),
+                params,
+            };
+            self.transport
+                .send(&request)
+                .await
+                .context("Failed to send resources/list request")?;
+            let response = self
+                .transport
+                .receive()
+                .await
+                .context("Failed to receive resources/list response")?;
+            if let Some(error) = response.error {
+                anyhow::bail!("resources/list failed: {}", error.message);
+            }
+            let result_value = response
+                .result
+                .context("resources/list response missing result")?;
+            let resources_value = result_value
+                .get("resources")
+                .context("resources/list result missing 'resources' field")?;
+            let resources: Vec<McpResource> = serde_json::from_value(resources_value.clone())
+                .context("Failed to parse resources list")?;
+            all_resources.extend(resources);
+            cursor = result_value
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if cursor.is_none() {
+                break;
+            }
         }
-
-        let result_value = response
-            .result
-            .context("resources/list response missing result")?;
-
-        let resources_value = result_value
-            .get("resources")
-            .context("resources/list result missing 'resources' field")?;
-
-        let resources: Vec<McpResource> = serde_json::from_value(resources_value.clone())
-            .context("Failed to parse resources list")?;
-
-        debug!("Retrieved {} resources", resources.len());
-        Ok(resources)
+        if cursor.is_some() {
+            warn!(
+                "Pagination limit reached (MAX_PAGES={}), results may be incomplete",
+                MAX_PAGES
+            );
+        }
+        debug!("Retrieved {} resources", all_resources.len());
+        Ok(all_resources)
     }
 
     /// Read a resource by URI
@@ -272,42 +311,53 @@ impl McpClient {
     /// List available prompts
     pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>> {
         debug!("Requesting prompts list");
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: RequestId::Number(self.next_request_id()),
-            method: "prompts/list".to_string(),
-            params: None,
-        };
-
-        self.transport
-            .send(&request)
-            .await
-            .context("Failed to send prompts/list request")?;
-
-        let response = self
-            .transport
-            .receive()
-            .await
-            .context("Failed to receive prompts/list response")?;
-
-        if let Some(error) = response.error {
-            anyhow::bail!("prompts/list failed: {}", error.message);
+        let mut all_prompts = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _page in 0..MAX_PAGES {
+            let params = cursor.as_ref().map(|c| serde_json::json!({"cursor": c}));
+            let request = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: RequestId::Number(self.next_request_id()),
+                method: "prompts/list".to_string(),
+                params,
+            };
+            self.transport
+                .send(&request)
+                .await
+                .context("Failed to send prompts/list request")?;
+            let response = self
+                .transport
+                .receive()
+                .await
+                .context("Failed to receive prompts/list response")?;
+            if let Some(error) = response.error {
+                anyhow::bail!("prompts/list failed: {}", error.message);
+            }
+            let result_value = response
+                .result
+                .context("prompts/list response missing result")?;
+            let prompts_value = result_value
+                .get("prompts")
+                .context("prompts/list result missing 'prompts' field")?;
+            let prompts: Vec<McpPrompt> = serde_json::from_value(prompts_value.clone())
+                .context("Failed to parse prompts list")?;
+            all_prompts.extend(prompts);
+            cursor = result_value
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if cursor.is_none() {
+                break;
+            }
         }
-
-        let result_value = response
-            .result
-            .context("prompts/list response missing result")?;
-
-        let prompts_value = result_value
-            .get("prompts")
-            .context("prompts/list result missing 'prompts' field")?;
-
-        let prompts: Vec<McpPrompt> = serde_json::from_value(prompts_value.clone())
-            .context("Failed to parse prompts list")?;
-
-        debug!("Retrieved {} prompts", prompts.len());
-        Ok(prompts)
+        if cursor.is_some() {
+            warn!(
+                "Pagination limit reached (MAX_PAGES={}), results may be incomplete",
+                MAX_PAGES
+            );
+        }
+        debug!("Retrieved {} prompts", all_prompts.len());
+        Ok(all_prompts)
     }
 
     /// Get a prompt by name with optional arguments
@@ -732,5 +782,110 @@ mod tests {
 
         let result = client.close().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_pagination() {
+        let mut mock = MockTransport::new();
+
+        // Handshake response
+        mock.queue_response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Number(1),
+            result: Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "TestServer", "version": "1.0.0"}
+            })),
+            error: None,
+        });
+
+        // Page 1: one tool + nextCursor
+        mock.queue_response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Number(2),
+            result: Some(json!({
+                "tools": [
+                    {
+                        "name": "tool_a",
+                        "description": "First tool",
+                        "inputSchema": {"type": "object", "properties": {}}
+                    }
+                ],
+                "nextCursor": "cursor_page2"
+            })),
+            error: None,
+        });
+
+        // Page 2: one tool, no nextCursor (last page)
+        mock.queue_response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Number(3),
+            result: Some(json!({
+                "tools": [
+                    {
+                        "name": "tool_b",
+                        "description": "Second tool",
+                        "inputSchema": {"type": "object", "properties": {}}
+                    }
+                ]
+            })),
+            error: None,
+        });
+
+        let mut client = McpClient::connect(Box::new(mock)).await.unwrap();
+        let tools = client.list_tools().await.unwrap();
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "tool_a");
+        assert_eq!(tools[1].name, "tool_b");
+
+        // The fact that we got 2 tools from 2 pages proves pagination worked
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_max_pages_guard() {
+        let mut mock = MockTransport::new();
+
+        // Handshake response
+        mock.queue_response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Number(1),
+            result: Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "TestServer", "version": "1.0.0"}
+            })),
+            error: None,
+        });
+
+        // Queue MAX_PAGES responses, each with nextCursor
+        for i in 0..super::MAX_PAGES {
+            let id = (i as i64) + 2;
+            let cursor_val = format!("cursor_{}", i + 1);
+            mock.queue_response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: RequestId::Number(id),
+                result: Some(json!({
+                    "tools": [
+                        {
+                            "name": format!("tool_{}", i),
+                            "description": null,
+                            "inputSchema": {"type": "object", "properties": {}}
+                        }
+                    ],
+                    "nextCursor": cursor_val
+                })),
+                error: None,
+            });
+        }
+
+        let mut client = McpClient::connect(Box::new(mock)).await.unwrap();
+        let tools = client.list_tools().await.unwrap();
+
+        // Should have collected one tool per page
+        assert_eq!(tools.len(), super::MAX_PAGES);
+        assert_eq!(tools[0].name, "tool_0");
+        assert_eq!(tools[super::MAX_PAGES - 1].name, format!("tool_{}", super::MAX_PAGES - 1));
     }
 }

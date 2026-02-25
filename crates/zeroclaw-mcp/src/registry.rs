@@ -17,7 +17,7 @@ use crate::types::{McpPrompt, McpResource, McpToolCallResult, McpToolInfo};
 
 /// Internal state for a connected MCP server
 struct McpServerState {
-    client: McpClient,
+    client: tokio::sync::Mutex<McpClient>,
     tools: Vec<McpToolInfo>,
     #[allow(dead_code)]
     config: McpServerConfig,
@@ -44,6 +44,14 @@ impl McpRegistry {
         }
     }
 
+    /// Validate that a server name is non-empty and not whitespace-only
+    fn validate_server_name(name: &str) -> Result<()> {
+        if name.trim().is_empty() {
+            anyhow::bail!("MCP server name must not be empty or whitespace-only");
+        }
+        Ok(())
+    }
+
     /// Add a new MCP server to the registry
     ///
     /// Spawns an StdioTransport, connects an McpClient, lists tools, and stores state.
@@ -57,6 +65,8 @@ impl McpRegistry {
     /// * `Err` - Failed to connect, or tool name collision, or cap exceeded
     pub async fn add_server(&self, config: McpServerConfig) -> Result<Vec<McpToolInfo>> {
         let server_name = config.name.clone();
+
+        Self::validate_server_name(&server_name)?;
 
         info!("Adding MCP server: {}", server_name);
 
@@ -81,27 +91,24 @@ impl McpRegistry {
 
         self.validate_tools(&tools, &server_name).await?;
 
-        {
-            let servers = self.servers.read().await;
-            let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
-            if current_tool_count + tools.len() > self.tool_cap {
-                let _ = client.close().await;
-                anyhow::bail!(
-                    "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
-                    server_name,
-                    self.tool_cap,
-                    current_tool_count,
-                    tools.len(),
-                    self.tool_cap
-                );
-            }
+        let mut servers = self.servers.write().await;
+        let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
+        if current_tool_count + tools.len() > self.tool_cap {
+            let _ = client.close().await;
+            anyhow::bail!(
+                "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
+                server_name,
+                self.tool_cap,
+                current_tool_count,
+                tools.len(),
+                self.tool_cap
+            );
         }
 
-        let mut servers = self.servers.write().await;
         servers.insert(
             server_name.clone(),
             McpServerState {
-                client,
+                client: tokio::sync::Mutex::new(client),
                 tools: tools.clone(),
                 config,
             },
@@ -123,52 +130,57 @@ impl McpRegistry {
         mut client: McpClient,
         config: McpServerConfig,
     ) -> Result<Vec<McpToolInfo>> {
+        Self::validate_server_name(&name)?;
         let tools = client
             .list_tools()
             .await
             .with_context(|| format!("Failed to list tools from MCP server '{}'", name))?;
-
         debug!("MCP server '{}' advertised {} tools", name, tools.len());
-
         self.validate_tools(&tools, &name).await?;
-
-        {
-            let servers = self.servers.read().await;
-            let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
-            if current_tool_count + tools.len() > self.tool_cap {
-                let _ = client.close().await;
-                anyhow::bail!(
-                    "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
-                    name,
-                    self.tool_cap,
-                    current_tool_count,
-                    tools.len(),
-                    self.tool_cap
-                );
-            }
-        }
-
         let mut servers = self.servers.write().await;
+        let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
+        if current_tool_count + tools.len() > self.tool_cap {
+            let _ = client.close().await;
+            anyhow::bail!(
+                "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
+                name,
+                self.tool_cap,
+                current_tool_count,
+                tools.len(),
+                self.tool_cap
+            );
+        }
         servers.insert(
             name.clone(),
             McpServerState {
-                client,
+                client: tokio::sync::Mutex::new(client),
                 tools: tools.clone(),
                 config,
             },
         );
-
         info!(
             "MCP server '{}' added successfully with {} tools",
             name,
             tools.len()
         );
-
         Ok(tools)
     }
 
     async fn validate_tools(&self, tools: &[McpToolInfo], server_name: &str) -> Result<()> {
         for tool in tools {
+            if tool.name.is_empty() {
+                anyhow::bail!(
+                    "MCP server '{}' has a tool with an empty name",
+                    server_name
+                );
+            }
+            if !tool.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                anyhow::bail!(
+                    "MCP server '{}' tool '{}' contains invalid characters (allowed: a-zA-Z0-9_-)",
+                    server_name,
+                    tool.name
+                );
+            }
             if self.builtin_tool_names.contains(&tool.name) {
                 anyhow::bail!(
                     "MCP server '{}' tool '{}' collides with builtin tool name",
@@ -209,12 +221,14 @@ impl McpRegistry {
         info!("Removing MCP server: {}", name);
 
         let mut servers = self.servers.write().await;
-        let mut server = servers
+        let server = servers
             .remove(name)
             .with_context(|| format!("MCP server '{}' not found", name))?;
 
         server
             .client
+            .lock()
+            .await
             .close()
             .await
             .with_context(|| format!("Failed to close MCP server '{}'", name))?;
@@ -273,29 +287,27 @@ impl McpRegistry {
             tool_name, server_name
         );
 
-        let mut servers = self.servers.write().await;
+        let servers = self.servers.read().await;
         let server = servers
-            .get_mut(server_name)
+            .get(server_name)
             .with_context(|| format!("MCP server '{}' not found", server_name))?;
 
-        server
-            .client
-            .call_tool(tool_name, args)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to call tool '{}' on server '{}'",
-                    tool_name, server_name
-                )
-            })
+        let mut client = server.client.lock().await;
+        client.call_tool(tool_name, args).await.with_context(|| {
+            format!(
+                "Failed to call tool '{}' on server '{}'",
+                tool_name, server_name
+            )
+        })
     }
 
     /// Get all resources from all connected servers
     pub async fn get_all_resources(&self) -> Vec<(String, McpResource)> {
-        let mut servers = self.servers.write().await;
+        let servers = self.servers.read().await;
         let mut all_resources = Vec::new();
-        for (server_name, state) in servers.iter_mut() {
-            match state.client.list_resources().await {
+        for (server_name, state) in servers.iter() {
+            let mut client = state.client.lock().await;
+            match client.list_resources().await {
                 Ok(resources) => {
                     for resource in resources {
                         all_resources.push((server_name.clone(), resource));
@@ -315,10 +327,11 @@ impl McpRegistry {
 
     /// Get all prompts from all connected servers
     pub async fn get_all_prompts(&self) -> Vec<(String, McpPrompt)> {
-        let mut servers = self.servers.write().await;
+        let servers = self.servers.read().await;
         let mut all_prompts = Vec::new();
-        for (server_name, state) in servers.iter_mut() {
-            match state.client.list_prompts().await {
+        for (server_name, state) in servers.iter() {
+            let mut client = state.client.lock().await;
+            match client.list_prompts().await {
                 Ok(prompts) => {
                     for prompt in prompts {
                         all_prompts.push((server_name.clone(), prompt));
@@ -699,5 +712,101 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_server_name_rejected() {
+        let registry = McpRegistry::new(50, HashSet::new());
+        let tools_json = vec![json!({
+            "name": "test_tool",
+            "description": "A test tool",
+            "inputSchema": {"type": "object"}
+        })];
+        let client = create_mock_client(create_tools_response(tools_json)).await;
+        let config = McpServerConfig {
+            name: "".to_string(),
+            command: "test".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+
+        let result = registry
+            .add_server_with_client("".to_string(), client, config)
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("must not be empty or whitespace-only"));
+    }
+
+    #[tokio::test]
+    async fn test_whitespace_server_name_rejected() {
+        let registry = McpRegistry::new(50, HashSet::new());
+        let tools_json = vec![json!({
+            "name": "test_tool",
+            "description": "A test tool",
+            "inputSchema": {"type": "object"}
+        })];
+        let client = create_mock_client(create_tools_response(tools_json)).await;
+        let config = McpServerConfig {
+            name: "   ".to_string(),
+            command: "test".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+
+        let result = registry
+            .add_server_with_client("   ".to_string(), client, config)
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("must not be empty or whitespace-only"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_tool_name_rejected() {
+        let registry = McpRegistry::new(50, HashSet::new());
+        let tools_json = vec![json!({
+            "name": "invalid tool!",
+            "description": "Tool with spaces and special chars",
+            "inputSchema": {"type": "object"}
+        })];
+        let client = create_mock_client(create_tools_response(tools_json)).await;
+        let config = McpServerConfig {
+            name: "test_server".to_string(),
+            command: "test".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+
+        let result = registry
+            .add_server_with_client("test_server".to_string(), client, config)
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("contains invalid characters"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_tool_name_rejected() {
+        let registry = McpRegistry::new(50, HashSet::new());
+        let tools_json = vec![json!({
+            "name": "",
+            "description": "Tool with empty name",
+            "inputSchema": {"type": "object"}
+        })];
+        let client = create_mock_client(create_tools_response(tools_json)).await;
+        let config = McpServerConfig {
+            name: "test_server".to_string(),
+            command: "test".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+
+        let result = registry
+            .add_server_with_client("test_server".to_string(), client, config)
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("empty name"));
     }
 }
