@@ -1,10 +1,9 @@
 {
-  "active_plan": "D:\\Desktop\\zeroclaw-cheap\\.sisyphus\\plans\\mcp-support.md",
-  "started_at": "2026-02-23T07:20:54.379Z",
+  "active_plan": "D:\\Desktop\\zeroclaw-cheap\\.sisyphus\\plans\\mcp-4fixes.md",
+  "started_at": "2026-02-25T04:01:31.423Z",
   "session_ids": [
-    "ses_376c44de1ffePy2ALXpF8Rpu86",
-    "ses_36fdb04a7ffei21FXSqRUHu108"
+    "ses_36d4524a2ffenwkaXF2Vr8vL1h"
   ],
-  "plan_name": "mcp-support",
+  "plan_name": "mcp-4fixes",
   "agent": "atlas"
 }
