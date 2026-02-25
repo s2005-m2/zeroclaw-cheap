@@ -299,30 +299,35 @@ pub fn all_tools_with_runtime(
 
     #[cfg(feature = "vpn")]
     {
+        let vpn_cfg = &root_config.vpn;
+        // Config-first, env-var-override for VPN settings.
         let vpn_enabled = std::env::var("ZEROCLAW_VPN_ENABLED")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+            .unwrap_or(vpn_cfg.enabled);
         if vpn_enabled {
             use crate::vpn::{BypassChecker, NodeManager, VpnProxyBridge};
             use tokio::sync::RwLock;
 
-            let clash_proxy_url = std::env::var("ZEROCLAW_VPN_CLASH_PROXY_URL").unwrap_or_default();
+            let subscription_url = std::env::var("ZEROCLAW_VPN_CLASH_PROXY_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| vpn_cfg.subscription_url.clone());
             let listen_port: u16 = std::env::var("ZEROCLAW_VPN_LISTEN_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(7890);
+                .unwrap_or(vpn_cfg.listen_port);
             let health_interval: u64 = std::env::var("ZEROCLAW_VPN_HEALTH_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(30);
-            let bypass_extra: Vec<String> = std::env::var("ZEROCLAW_VPN_BYPASS_EXTRA")
-                .map(|v| {
-                    v.split(',')
-                        .map(|s| s.trim().to_owned())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
+                .unwrap_or(vpn_cfg.health_check_interval_secs);
+            let mut bypass_extra: Vec<String> = vpn_cfg.bypass_extra.clone();
+            if let Ok(env_bypass) = std::env::var("ZEROCLAW_VPN_BYPASS_EXTRA") {
+                bypass_extra = env_bypass
+                    .split(',')
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
 
             let vpn_state = Arc::new(RwLock::new(vpn_control::VpnState {
                 runtime: None,
@@ -331,11 +336,7 @@ pub fn all_tools_with_runtime(
                 bridge: VpnProxyBridge::new(),
                 health_cancel: None,
                 last_health: vec![],
-                subscription_url: if clash_proxy_url.is_empty() {
-                    None
-                } else {
-                    Some(clash_proxy_url)
-                },
+                subscription_url,
                 listen_port,
                 health_check_interval_secs: health_interval,
             }));

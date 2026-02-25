@@ -169,6 +169,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         query_classification: crate::config::QueryClassificationConfig::default(),
         transcription: crate::config::TranscriptionConfig::default(),
         mcp: crate::config::McpConfig::default(),
+        vpn: crate::config::VpnConfig::default(),
     };
 
     println!(
@@ -518,6 +519,7 @@ async fn run_quick_setup_with_home(
         query_classification: crate::config::QueryClassificationConfig::default(),
         transcription: crate::config::TranscriptionConfig::default(),
         mcp: crate::config::McpConfig::default(),
+        vpn: crate::config::VpnConfig::default(),
     };
 
     config.save().await?;

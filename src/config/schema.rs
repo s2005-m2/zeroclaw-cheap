@@ -212,6 +212,10 @@ pub struct Config {
     /// MCP (Model Context Protocol) configuration (`[mcp]`).
     #[serde(default)]
     pub mcp: McpConfig,
+
+    /// VPN proxy configuration (`[vpn]`). Requires `--features vpn`.
+    #[serde(default)]
+    pub vpn: VpnConfig,
 }
 
 // ── Delegate Agents ──────────────────────────────────────────────
@@ -404,6 +408,53 @@ impl Default for McpConfig {
             enabled: false,
             tool_cap: 50,
             config_path: None,
+        }
+    }
+}
+
+// ── VPN Proxy ────────────────────────────────────────────────────
+
+/// VPN proxy configuration (`[vpn]`). Requires `--features vpn`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VpnConfig {
+    /// Enable VPN proxy on startup. Default: false.
+    /// Can be overridden by `ZEROCLAW_VPN_ENABLED` env var.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Clash subscription URL for fetching proxy nodes.
+    /// Can be overridden by `ZEROCLAW_VPN_CLASH_PROXY_URL` env var.
+    #[serde(default)]
+    pub subscription_url: Option<String>,
+    /// SOCKS5 listen port for the local Clash runtime. Default: 7890.
+    /// Can be overridden by `ZEROCLAW_VPN_LISTEN_PORT` env var.
+    #[serde(default = "default_vpn_listen_port")]
+    pub listen_port: u16,
+    /// Background health check interval in seconds. Default: 30.
+    /// Can be overridden by `ZEROCLAW_VPN_HEALTH_INTERVAL_SECS` env var.
+    #[serde(default = "default_vpn_health_interval")]
+    pub health_check_interval_secs: u64,
+    /// Extra bypass domains (comma-separated in env, array in TOML).
+    /// Can be overridden by `ZEROCLAW_VPN_BYPASS_EXTRA` env var.
+    #[serde(default)]
+    pub bypass_extra: Vec<String>,
+}
+
+fn default_vpn_listen_port() -> u16 {
+    7890
+}
+
+fn default_vpn_health_interval() -> u64 {
+    30
+}
+
+impl Default for VpnConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            subscription_url: None,
+            listen_port: 7890,
+            health_check_interval_secs: 30,
+            bypass_extra: Vec::new(),
         }
     }
 }
@@ -3525,6 +3576,7 @@ impl Default for Config {
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
             mcp: McpConfig::default(),
+            vpn: VpnConfig::default(),
         }
     }
 }
@@ -4797,6 +4849,7 @@ default_temperature = 0.7
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             mcp: McpConfig::default(),
+            vpn: VpnConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -4972,6 +5025,7 @@ tool_dispatcher = "xml"
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             mcp: McpConfig::default(),
+            vpn: VpnConfig::default(),
         };
 
         config.save().await.unwrap();

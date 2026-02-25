@@ -649,6 +649,33 @@ Notes:
 - Place `.md`/`.txt` datasheet files named by board (e.g. `nucleo-f401re.md`, `rpi-gpio.md`) in `datasheet_dir` for RAG retrieval.
 - See [hardware-peripherals-design.md](hardware-peripherals-design.md) for board protocol and firmware notes.
 
+## `[vpn]` (requires `--features vpn`)
+
+| Key | Default | Env Override | Notes |
+|---|---|---|---|
+| `enabled` | `false` | `ZEROCLAW_VPN_ENABLED` | Enable VPN proxy on startup |
+| `subscription_url` | _(none)_ | `ZEROCLAW_VPN_CLASH_PROXY_URL` | Clash subscription URL for fetching proxy nodes |
+| `listen_port` | `7890` | `ZEROCLAW_VPN_LISTEN_PORT` | Local SOCKS5 listen port for Clash runtime |
+| `health_check_interval_secs` | `30` | `ZEROCLAW_VPN_HEALTH_INTERVAL_SECS` | Background health check interval (seconds) |
+| `bypass_extra` | `[]` | `ZEROCLAW_VPN_BYPASS_EXTRA` | Extra bypass domains (comma-separated in env) |
+
+Example:
+
+```toml
+[vpn]
+enabled = true
+subscription_url = "https://example.com/clash/sub?token=xxx"
+listen_port = 7890
+health_check_interval_secs = 30
+bypass_extra = ["*.internal.corp", "*.local"]
+```
+
+Notes:
+
+- Requires building with `cargo build --features vpn` (or included in `setup-cn.sh`).
+- Env vars take precedence over config values when set.
+- Built-in bypass list includes common China domains (`*.cn`, `*.baidu.com`, etc.).
+- The agent can manage VPN at runtime via the `vpn_control` tool (enable/disable/switch nodes).
 ## Security-Relevant Defaults
 
 - deny-by-default channel allowlists (`[]` means deny all)

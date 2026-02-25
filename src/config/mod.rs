@@ -15,7 +15,7 @@ pub use schema::{
     ProxyScope, QueryClassificationConfig, ReliabilityConfig, ResourceLimitsConfig, RuntimeConfig,
     SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig, SkillsConfig,
     SkillsPromptInjectionMode, SlackConfig, StorageConfig, StorageProviderConfig,
-    StorageProviderSection, StreamMode, TelegramConfig, TranscriptionConfig, TunnelConfig,
+    StorageProviderSection, StreamMode, TelegramConfig, TranscriptionConfig, TunnelConfig, VpnConfig,
     WebSearchConfig, WebhookConfig,
 };
 
