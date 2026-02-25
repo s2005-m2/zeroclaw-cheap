@@ -59,16 +59,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct SubscriptionParser;
 
 impl SubscriptionParser {
-    /// Fetch a Clash subscription URL and parse its proxy nodes.
-    ///
-    /// Uses the runtime proxy client for network access. Handles common
-    /// HTTP errors (timeout, 403, non-200) with descriptive messages.
+    /// Uses a direct (no-proxy) HTTP client for network access, since
+    /// subscription URLs are expected to be reachable without VPN.
+    /// This avoids the chicken-and-egg problem where the VPN proxy
+    /// is not yet available when fetching the subscription for the first time.
     pub async fn fetch_and_parse(url: &str) -> anyhow::Result<Vec<ProxyNode>> {
-        let client = crate::config::build_runtime_proxy_client_with_timeouts(
-            "vpn.subscription",
-            FETCH_TIMEOUT.as_secs(),
-            CONNECT_TIMEOUT.as_secs(),
-        );
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(FETCH_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build subscription HTTP client: {e}"))?;
 
         let resp = client
             .get(url)

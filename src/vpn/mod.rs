@@ -13,6 +13,7 @@ pub mod bridge;
 
 pub use bypass::{BypassChecker, BypassDecision};
 pub use runtime::{generate_clash_config, ClashRuntime};
+pub(crate) use runtime::{CLASH_CONTROLLER_PORT, SELECTOR_GROUP_NAME};
 pub use subscription::{NodeType, ProxyNode, SubscriptionParser};
 pub use node_manager::{NodeCache, NodeManager};
 pub use health::{HealthChecker, HealthResult, NodeStatus};

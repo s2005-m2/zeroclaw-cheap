@@ -1,8 +1,9 @@
 //! Health checker and latency tester for VPN proxy nodes.
 //!
 //! Probes proxy nodes by sending HTTP requests through the SOCKS5 proxy
-//! to a connectivity check endpoint. Supports parallel health checks
-//! and a background monitoring loop with graceful shutdown.
+//! to a connectivity check endpoint. Uses Clash's controller API to switch
+//! to each node before probing, so each node gets an independent latency
+//! measurement. Supports background monitoring loop with graceful shutdown.
 
 use std::time::{Duration, Instant};
 
@@ -122,6 +123,73 @@ impl HealthChecker {
         }
     }
 
+    /// Switch the Clash selector group to a specific node via controller API.
+    ///
+    /// This is a helper for `check_all_via_clash` — it tells Clash to route
+    /// traffic through the named node so the next probe measures that node's latency.
+    async fn clash_switch_node(controller_url: &str, group_name: &str, node_name: &str) -> Result<()> {
+        let url = format!("{controller_url}/proxies/{group_name}");
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build clash controller client: {e}"))?;
+        let resp = client
+            .put(&url)
+            .json(&serde_json::json!({ "name": node_name }))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("clash controller unreachable: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("clash node switch to '{node_name}' failed (HTTP {status}): {body}");
+        }
+        Ok(())
+    }
+
+    /// Check all nodes by switching Clash to each node sequentially.
+    ///
+    /// For each node: switch Clash selector → brief settle delay → probe → record.
+    /// This gives each node an independent latency measurement instead of
+    /// measuring the same active node repeatedly.
+    ///
+    /// After all probes, restores the original active node (best-effort).
+    pub async fn check_all_via_clash(
+        node_names: &[String],
+        proxy_url: &str,
+        controller_url: &str,
+        group_name: &str,
+        current_active: Option<&str>,
+    ) -> Vec<(String, HealthResult)> {
+        let mut results = Vec::with_capacity(node_names.len());
+
+        for name in node_names {
+            // Switch Clash to this node.
+            if let Err(e) = Self::clash_switch_node(controller_url, group_name, name).await {
+                tracing::warn!("health check: failed to switch to node '{name}': {e}");
+                results.push((name.clone(), HealthResult::unhealthy()));
+                continue;
+            }
+
+            // Brief settle delay for Clash to establish the new connection path.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Probe through the proxy (now routed to this specific node).
+            let result = Self::check_node(proxy_url).await;
+            results.push((name.clone(), result));
+        }
+
+        // Best-effort: restore the original active node.
+        if let Some(original) = current_active {
+            if let Err(e) = Self::clash_switch_node(controller_url, group_name, original).await {
+                tracing::warn!("health check: failed to restore active node '{original}': {e}");
+            }
+        }
+
+        results
+    }
+
     /// Check all nodes in parallel. Each entry is `(name, proxy_url)`.
     /// Returns `(name, HealthResult)` for every node.
     pub async fn check_all(nodes: &[(String, String)]) -> Vec<(String, HealthResult)> {
@@ -166,6 +234,51 @@ impl HealthChecker {
                     }
                     _ = ticker.tick() => {
                         let results = Self::check_all(&nodes).await;
+                        on_results(results);
+                    }
+                }
+            }
+        })
+    }
+    /// Spawn a background health-check loop that probes each node individually
+    /// by switching Clash's selector group before each probe.
+    ///
+    /// Unlike `spawn_background_loop`, this gives each node an independent
+    /// latency measurement. The `get_active` callback retrieves the current
+    /// active node name so it can be restored after each round.
+    pub fn spawn_clash_aware_loop<F, G>(
+        node_names: Vec<String>,
+        proxy_url: String,
+        controller_url: String,
+        group_name: String,
+        interval: Option<Duration>,
+        token: CancellationToken,
+        get_active: G,
+        on_results: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(Vec<(String, HealthResult)>) + Send + Sync + 'static,
+        G: Fn() -> Option<String> + Send + Sync + 'static,
+    {
+        let interval = interval.unwrap_or(DEFAULT_CHECK_INTERVAL);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        tracing::debug!("clash-aware health check loop cancelled");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let active = get_active();
+                        let results = Self::check_all_via_clash(
+                            &node_names,
+                            &proxy_url,
+                            &controller_url,
+                            &group_name,
+                            active.as_deref(),
+                        ).await;
                         on_results(results);
                     }
                 }

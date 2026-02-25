@@ -14,6 +14,7 @@ use super::traits::{Tool, ToolResult};
 use crate::security::SecurityPolicy;
 use crate::vpn::{
     BypassChecker, ClashRuntime, HealthChecker, NodeManager, SubscriptionParser, VpnProxyBridge,
+    CLASH_CONTROLLER_PORT, SELECTOR_GROUP_NAME,
 };
 
 // ── Shared VPN state ────────────────────────────────────────────────
@@ -120,23 +121,45 @@ impl VpnControlTool {
         let proxy_url = runtime.local_proxy_url();
         state.bridge.activate(&proxy_url, &state.bypass_checker)?;
         state.node_manager = NodeManager::new(nodes.clone());
-        let check_pairs: Vec<(String, String)> = nodes
-            .iter()
-            .map(|n| (n.name.clone(), proxy_url.clone()))
-            .collect();
-        let health_results = HealthChecker::check_all(&check_pairs).await;
+        let node_names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
+        let controller_url = format!("http://127.0.0.1:{CLASH_CONTROLLER_PORT}");
+        let health_results = HealthChecker::check_all_via_clash(
+            &node_names,
+            &proxy_url,
+            &controller_url,
+            SELECTOR_GROUP_NAME,
+            None,
+        ).await;
         if let Some(best) = state.node_manager.select_best_node(&health_results) {
             let best_name = best.name.clone();
             state.node_manager.set_active(&best_name);
+            // Switch Clash to the best node after selection.
+            if let Some(ref mut rt) = state.runtime {
+                let _ = rt.switch_node(&best_name).await;
+            }
         }
         state.last_health = health_results;
         let token = tokio_util::sync::CancellationToken::new();
         let health_state = Arc::clone(&self.state);
         let interval_secs = state.health_check_interval_secs;
-        HealthChecker::spawn_background_loop(
-            check_pairs,
+        let bg_proxy_url = proxy_url.clone();
+        let bg_controller_url = controller_url.clone();
+        let bg_node_names = node_names.clone();
+        let active_state = Arc::clone(&self.state);
+        HealthChecker::spawn_clash_aware_loop(
+            bg_node_names,
+            bg_proxy_url,
+            bg_controller_url,
+            SELECTOR_GROUP_NAME.to_string(),
             Some(std::time::Duration::from_secs(interval_secs)),
             token.clone(),
+            move || {
+                // Best-effort read of current active node for restore-after-probe.
+                // Uses try_read to avoid blocking the health check loop.
+                active_state.try_read().ok().and_then(|g| {
+                    g.node_manager.active_node().map(|n| n.name.clone())
+                })
+            },
             move |results| {
                 let st = Arc::clone(&health_state);
                 tokio::spawn(async move {
@@ -238,16 +261,29 @@ impl VpnControlTool {
         }
         let nodes = SubscriptionParser::fetch_and_parse(sub_url).await?;
         state.node_manager = NodeManager::new(nodes.clone());
-        if let Some(ref rt) = state.runtime {
-            let proxy_url = rt.local_proxy_url();
-            let check_pairs: Vec<(String, String)> = nodes
-                .iter()
-                .map(|n| (n.name.clone(), proxy_url.clone()))
-                .collect();
-            let health_results = HealthChecker::check_all(&check_pairs).await;
+        // Extract proxy URL and node info before health check to avoid borrow conflicts.
+        let (proxy_url, do_health) = match state.runtime.as_ref() {
+            Some(rt) => (Some(rt.local_proxy_url()), true),
+            None => (None, false),
+        };
+        if do_health {
+            let proxy_url = proxy_url.unwrap();
+            let node_names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
+            let controller_url = format!("http://127.0.0.1:{CLASH_CONTROLLER_PORT}");
+            let current_active = state.node_manager.active_node().map(|n| n.name.clone());
+            let health_results = HealthChecker::check_all_via_clash(
+                &node_names,
+                &proxy_url,
+                &controller_url,
+                SELECTOR_GROUP_NAME,
+                current_active.as_deref(),
+            ).await;
             if let Some(best) = state.node_manager.select_best_node(&health_results) {
                 let best_name = best.name.clone();
                 state.node_manager.set_active(&best_name);
+                if let Some(ref mut rt) = state.runtime {
+                    let _ = rt.switch_node(&best_name).await;
+                }
             }
             state.last_health = health_results;
         }

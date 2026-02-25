@@ -25,10 +25,10 @@ use anyhow::{bail, Context, Result};
 use super::subscription::ProxyNode;
 
 /// Clash controller API default port (RESTful API for node switching).
-const CLASH_CONTROLLER_PORT: u16 = 9090;
+pub(crate) const CLASH_CONTROLLER_PORT: u16 = 9090;
 
 /// Name of the proxy selector group in generated Clash config.
-const SELECTOR_GROUP_NAME: &str = "zeroclaw-select";
+pub(crate) const SELECTOR_GROUP_NAME: &str = "zeroclaw-select";
 
 // ── Clash config YAML generation ────────────────────────────────────
 
