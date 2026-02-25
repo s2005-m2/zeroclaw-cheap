@@ -338,7 +338,7 @@ impl Tool for VpnControlTool {
         "vpn_control"
     }
     fn description(&self) -> &str {
-        "Manage VPN proxy lifecycle: enable/disable, switch nodes, check status, refresh subscription, manage bypass list"
+        "Manage VPN proxy lifecycle. Use 'enable' to start the Clash proxy (fetches subscription, selects fastest node). Use 'disable' to stop. Use 'status' to check if VPN is active and current node latency. Use 'list_nodes' to see all available proxy nodes with health. Use 'switch_node' to change active node. Use 'refresh' to re-fetch subscription and re-select best node. Use 'add_bypass'/'remove_bypass' to manage domains that skip the proxy (e.g. local/China sites). Typical workflow: status -> enable -> list_nodes -> switch_node if needed. Enable VPN when accessing blocked APIs or services behind a firewall."
     }
     fn parameters_schema(&self) -> Value {
         json!({

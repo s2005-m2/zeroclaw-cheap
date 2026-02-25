@@ -39,7 +39,7 @@ impl Tool for McpManageTool {
     }
 
     fn description(&self) -> &str {
-        "Add, remove, or list MCP servers"
+        "Manage MCP (Model Context Protocol) servers. Use 'list' to see running servers and their tool counts. Use 'add' to install a new MCP server (requires name, command, optional args and env). Use 'remove' to uninstall a server. Common MCP servers: filesystem (npx -y @modelcontextprotocol/server-filesystem /path), git (npx -y @modelcontextprotocol/server-git), fetch (npx -y @modelcontextprotocol/server-fetch), postgres (npx -y @modelcontextprotocol/server-postgres). After adding a server, its tools become available automatically. Requires Full autonomy level for add/remove."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

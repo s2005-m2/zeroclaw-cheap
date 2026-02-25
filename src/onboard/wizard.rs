@@ -5081,6 +5081,18 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          ## Tools & Skills\n\n\
          Skills are listed in the system prompt. Use `read` on a skill's SKILL.md for details.\n\
          Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.\n\n\
+         ## VPN Proxy\n\n\
+         If `vpn_control` tool is available, you can manage network proxy for accessing blocked APIs.\n\
+         - Check `vpn_control status` before assuming network issues.\n\
+         - Use `vpn_control enable` when API calls fail due to network restrictions (e.g. OpenAI, Google, HuggingFace from China).\n\
+         - Use `vpn_control disable` when done, to reduce latency for local/domestic traffic.\n\
+         - Bypass domains (China sites, local services) are auto-configured; add more with `add_bypass`.\n\n\
+         ## MCP Servers\n\n\
+         If `mcp_manage` tool is available, you can install MCP servers to gain new capabilities.\n\
+         - Use `mcp_manage list` to see installed servers and their tools.\n\
+         - Use `mcp_manage add` to install a server (e.g. filesystem, git, fetch, postgres).\n\
+         - After adding, the server's tools appear automatically in your tool list.\n\
+         - Common pattern: user asks for a capability you lack -> check if an MCP server provides it -> install it.\n\n\
          ## Crash Recovery\n\n\
          - If a run stops unexpectedly, recover context before acting.\n\
          - Check `MEMORY.md` + latest `memory/*.md` notes to avoid duplicate work.\n\
@@ -5188,6 +5200,16 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - **memory_forget** — Delete a memory entry\n\
            - Use when: memory is incorrect, stale, or explicitly requested to be removed.\n\
            - Don't use when: uncertain about impact; verify before deleting.\n\n\
+         ## VPN & Network (optional, requires `--features vpn`)\n\n\
+         - **vpn_control** — Manage VPN proxy (Clash-based)\n\
+           - Use when: API calls fail due to network restrictions, need to access blocked services.\n\
+           - Don't use when: network is working fine, or accessing local/domestic services.\n\
+           - Workflow: `status` -> `enable` -> `list_nodes` -> `switch_node` if needed -> `disable` when done.\n\n\
+         ## MCP Servers (optional, requires `[mcp] enabled = true`)\n\n\
+         - **mcp_manage** — Install/remove MCP servers for extended capabilities\n\
+           - Use when: user needs a capability not in built-in tools (e.g. database access, web fetch).\n\
+           - Don't use when: a built-in tool already covers the need.\n\
+           - Common servers: filesystem, git, fetch, postgres (all via `npx -y @modelcontextprotocol/server-<name>`).\n\n\
          ---\n\
          *Add whatever helps you do your job. This is your cheat sheet.*\n";
 
