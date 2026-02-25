@@ -506,6 +506,7 @@ fn install_linux_systemd(config: &Config) -> Result<()> {
     // survives after all login sessions end (e.g. SSH disconnect).
     // Without linger, systemd kills the entire user slice on last session close,
     // making Restart=always ineffective.
+    #[cfg(target_os = "linux")]
     enable_linger_if_needed();
 
     println!("✅ Installed systemd user service: {}", file.display());
