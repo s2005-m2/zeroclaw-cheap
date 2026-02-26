@@ -170,6 +170,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         transcription: crate::config::TranscriptionConfig::default(),
         mcp: crate::config::McpConfig::default(),
         vpn: crate::config::VpnConfig::default(),
+        docs_sync: crate::config::DocsSyncConfig::default(),
     };
 
     println!(
@@ -520,6 +521,7 @@ async fn run_quick_setup_with_home(
         transcription: crate::config::TranscriptionConfig::default(),
         mcp: crate::config::McpConfig::default(),
         vpn: crate::config::VpnConfig::default(),
+        docs_sync: crate::config::DocsSyncConfig::default(),
     };
 
     config.save().await?;
@@ -4733,6 +4735,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
                         allowed_users,
                         receive_mode,
                         port,
+                        stream_mode: StreamMode::default(),
+                        draft_update_interval_ms: 1000,
                     });
                 } else {
                     config.lark = Some(LarkConfig {
@@ -4744,6 +4748,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
                         use_feishu: false,
                         receive_mode,
                         port,
+                        stream_mode: StreamMode::default(),
+                        draft_update_interval_ms: 1000,
                     });
                 }
             }
@@ -6980,6 +6986,8 @@ mod tests {
             allowed_users: vec!["*".into()],
             receive_mode: crate::config::schema::LarkReceiveMode::Websocket,
             port: None,
+            stream_mode: crate::config::schema::StreamMode::default(),
+            draft_update_interval_ms: 500,
         });
         assert!(has_launchable_channels(&channels));
     }

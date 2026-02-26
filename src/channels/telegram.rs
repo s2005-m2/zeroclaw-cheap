@@ -33,6 +33,7 @@ struct IncomingAttachment {
 enum IncomingAttachmentKind {
     Document,
     Photo,
+    Video,
 }
 const TELEGRAM_BIND_COMMAND: &str = "/bind";
 
@@ -166,6 +167,19 @@ fn is_image_extension(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Check whether a file path has a recognized video extension.
+fn is_video_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "mp4" | "webm" | "mov" | "mkv" | "avi"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Build the user-facing content string for an incoming attachment.
 ///
 /// Photos with a recognized image extension use `[IMAGE:/path]` so the
@@ -180,6 +194,9 @@ fn format_attachment_content(
     match kind {
         IncomingAttachmentKind::Photo if is_image_extension(local_path) => {
             format!("[IMAGE:{}]", local_path.display())
+        }
+        IncomingAttachmentKind::Video if is_video_extension(local_path) => {
+            format!("[VIDEO:{}]", local_path.display())
         }
         _ => {
             format!("[Document: {}] {}", local_filename, local_path.display())
@@ -897,6 +914,27 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 file_size,
                 caption,
                 kind: IncomingAttachmentKind::Photo,
+            });
+        }
+
+        // Try video
+        if let Some(video) = message.get("video") {
+            let file_id = video.get("file_id")?.as_str()?.to_string();
+            let file_name = video
+                .get("file_name")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            let file_size = video.get("file_size").and_then(serde_json::Value::as_u64);
+            let caption = message
+                .get("caption")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            return Some(IncomingAttachment {
+                file_id,
+                file_name,
+                file_size,
+                caption,
+                kind: IncomingAttachmentKind::Video,
             });
         }
 
@@ -4443,5 +4481,49 @@ mod tests {
         // The combination of marker_count > 0 && !supports_vision() means
         // the agent loop will return ProviderCapabilityError before calling
         // the provider, and the channel will send "⚠️ Error: ..." to the user.
+    }
+
+    // ── Video attachment tests ────────────────────────────────────
+
+    #[test]
+    fn parse_attachment_metadata_detects_video() {
+        let message = serde_json::json!({
+            "video": {
+                "file_id": "vid123",
+                "file_name": "clip.mp4",
+                "file_size": 5000000,
+                "duration": 30,
+                "mime_type": "video/mp4"
+            },
+            "caption": "My video"
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.kind, IncomingAttachmentKind::Video);
+        assert_eq!(att.file_id, "vid123");
+        assert_eq!(att.file_name.as_deref(), Some("clip.mp4"));
+        assert_eq!(att.file_size, Some(5000000));
+        assert_eq!(att.caption.as_deref(), Some("My video"));
+    }
+
+    #[test]
+    fn format_attachment_content_video_generates_video_marker() {
+        let local_path = std::path::Path::new("/tmp/clip.mp4");
+        let content =
+            format_attachment_content(IncomingAttachmentKind::Video, "clip.mp4", local_path);
+        assert_eq!(content, "[VIDEO:/tmp/clip.mp4]");
+    }
+
+    #[test]
+    fn is_video_extension_recognizes_video_formats() {
+        assert!(is_video_extension(std::path::Path::new("clip.mp4")));
+        assert!(is_video_extension(std::path::Path::new("clip.webm")));
+        assert!(is_video_extension(std::path::Path::new("clip.mov")));
+        assert!(is_video_extension(std::path::Path::new("clip.mkv")));
+        assert!(is_video_extension(std::path::Path::new("clip.avi")));
+        assert!(is_video_extension(std::path::Path::new("CLIP.MP4")));
+
+        assert!(!is_video_extension(std::path::Path::new("photo.png")));
+        assert!(!is_video_extension(std::path::Path::new("file.txt")));
+        assert!(!is_video_extension(std::path::Path::new("file")));
     }
 }

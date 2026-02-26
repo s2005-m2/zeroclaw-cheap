@@ -37,10 +37,16 @@ enum MessageContent {
 enum MessagePart {
     Text { text: String },
     ImageUrl { image_url: ImageUrlPart },
+    VideoUrl { video_url: VideoUrlPart },
 }
 
 #[derive(Debug, Serialize)]
 struct ImageUrlPart {
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VideoUrlPart {
     url: String,
 }
 
@@ -252,12 +258,14 @@ impl OpenRouterProvider {
             return MessageContent::Text(content.to_string());
         }
 
-        let (cleaned_text, image_refs) = multimodal::parse_image_markers(content);
-        if image_refs.is_empty() {
+        let (after_images, image_refs) = multimodal::parse_image_markers(content);
+        let (cleaned_text, video_refs) = multimodal::parse_video_markers(&after_images);
+
+        if image_refs.is_empty() && video_refs.is_empty() {
             return MessageContent::Text(content.to_string());
         }
 
-        let mut parts = Vec::with_capacity(image_refs.len() + 1);
+        let mut parts = Vec::with_capacity(image_refs.len() + video_refs.len() + 1);
         let trimmed_text = cleaned_text.trim();
         if !trimmed_text.is_empty() {
             parts.push(MessagePart::Text {
@@ -268,6 +276,12 @@ impl OpenRouterProvider {
         for image_ref in image_refs {
             parts.push(MessagePart::ImageUrl {
                 image_url: ImageUrlPart { url: image_ref },
+            });
+        }
+
+        for video_ref in video_refs {
+            parts.push(MessagePart::VideoUrl {
+                video_url: VideoUrlPart { url: video_ref },
             });
         }
 
@@ -306,6 +320,7 @@ impl Provider for OpenRouterProvider {
         ProviderCapabilities {
             native_tool_calling: true,
             vision: true,
+            video: false,
         }
     }
 
@@ -883,6 +898,21 @@ mod tests {
         assert_eq!(parts[0]["text"], "Describe this");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,abcd");
+    }
+
+    #[test]
+    fn to_message_content_converts_video_markers_to_video_url_parts() {
+        let content = "Watch [VIDEO:https://example.com/v.mp4]";
+        let value =
+            serde_json::to_value(OpenRouterProvider::to_message_content("user", content)).unwrap();
+        let parts = value
+            .as_array()
+            .expect("multimodal content should be an array");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "Watch");
+        assert_eq!(parts[1]["type"], "video_url");
+        assert_eq!(parts[1]["video_url"]["url"], "https://example.com/v.mp4");
     }
 
     #[test]

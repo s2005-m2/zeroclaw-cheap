@@ -71,6 +71,8 @@ pub(crate) mod tunnel;
 pub(crate) mod util;
 #[cfg(feature = "vpn")]
 pub mod vpn;
+#[cfg(feature = "feishu-docs-sync")]
+pub mod docs_sync;
 
 pub use config::Config;
 
@@ -159,6 +161,25 @@ pub enum SkillCommands {
     Remove {
         /// Skill name to remove
         name: String,
+    },
+}
+
+/// Hooks management subcommands
+#[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum HooksCommands {
+    /// List all installed hooks (builtin + dynamic) with status
+    List,
+    /// Trigger hot-reload of dynamic hooks via stamp file
+    Reload,
+    /// Scaffold a new hook directory with HOOK.toml template
+    Create {
+        /// Hook name (alphanumeric + hyphens)
+        name: String,
+    },
+    /// Run security audit on a hook directory
+    Audit {
+        /// Path to hook directory (or hook name)
+        path: String,
     },
 }
 

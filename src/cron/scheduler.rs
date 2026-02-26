@@ -1,6 +1,8 @@
 use crate::channels::{
     Channel, DiscordChannel, MattermostChannel, SendMessage, SlackChannel, TelegramChannel,
 };
+#[cfg(feature = "channel-lark")]
+use crate::channels::LarkChannel;
 use crate::config::Config;
 use crate::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
@@ -203,7 +205,7 @@ async fn persist_job_result(
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
-    if let Err(e) = deliver_if_configured(config, job, output).await {
+    if let Err(e) = deliver_if_configured(config, job, output, None).await {
         if job.delivery.best_effort {
             tracing::warn!("Cron delivery failed (best_effort): {e}");
         } else {
@@ -281,7 +283,7 @@ fn warn_if_high_frequency_agent_job(job: &CronJob) {
     }
 }
 
-async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> Result<()> {
+async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str, hook_runner: Option<&crate::hooks::HookRunner>) -> Result<()> {
     let delivery: &DeliveryConfig = &job.delivery;
     if !delivery.mode.eq_ignore_ascii_case("announce") {
         return Ok(());
@@ -353,6 +355,66 @@ async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> 
                 mm.mention_only.unwrap_or(false),
             );
             channel.send(&SendMessage::new(output, target)).await?;
+        }
+        #[cfg(feature = "channel-lark")]
+        "lark" => {
+            let lc = config
+                .channels_config
+                .lark
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("lark channel not configured"))?;
+            let channel = LarkChannel::from_lark_config(lc);
+            let mut delivery_output = output.to_string();
+            if let Some(hooks) = hook_runner {
+                match hooks.run_on_cron_delivery(
+                    job.id.clone(),
+                    "lark".to_string(),
+                    target.to_string(),
+                    delivery_output.clone(),
+                ).await {
+                    crate::hooks::HookResult::Cancel(reason) => {
+                        tracing::info!(%reason, "cron delivery to lark cancelled by hook");
+                        return Ok(());
+                    }
+                    crate::hooks::HookResult::Continue((_s, _c, _r, ct)) => {
+                        delivery_output = ct;
+                    }
+                }
+            }
+            channel.send(&SendMessage::new(&delivery_output, target)).await?;
+            if let Some(hooks) = hook_runner {
+                hooks.fire_message_sent("lark", target, &delivery_output).await;
+            }
+        }
+        #[cfg(feature = "channel-lark")]
+        "feishu" => {
+            let fc = config
+                .channels_config
+                .feishu
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("feishu channel not configured"))?;
+            let channel = LarkChannel::from_feishu_config(fc);
+            let mut delivery_output = output.to_string();
+            if let Some(hooks) = hook_runner {
+                match hooks.run_on_cron_delivery(
+                    job.id.clone(),
+                    "feishu".to_string(),
+                    target.to_string(),
+                    delivery_output.clone(),
+                ).await {
+                    crate::hooks::HookResult::Cancel(reason) => {
+                        tracing::info!(%reason, "cron delivery to feishu cancelled by hook");
+                        return Ok(());
+                    }
+                    crate::hooks::HookResult::Continue((_s, _c, _r, ct)) => {
+                        delivery_output = ct;
+                    }
+                }
+            }
+            channel.send(&SendMessage::new(&delivery_output, target)).await?;
+            if let Some(hooks) = hook_runner {
+                hooks.fire_message_sent("feishu", target, &delivery_output).await;
+            }
         }
         other => anyhow::bail!("unsupported delivery channel: {other}"),
     }
@@ -854,7 +916,7 @@ mod tests {
         let config = test_config(&tmp).await;
         let mut job = test_job("echo ok");
 
-        assert!(deliver_if_configured(&config, &job, "x").await.is_ok());
+        assert!(deliver_if_configured(&config, &job, "x", None).await.is_ok());
 
         job.delivery = DeliveryConfig {
             mode: "announce".into(),
@@ -862,7 +924,7 @@ mod tests {
             to: Some("target".into()),
             best_effort: true,
         };
-        let err = deliver_if_configured(&config, &job, "x").await.unwrap_err();
+        let err = deliver_if_configured(&config, &job, "x", None).await.unwrap_err();
         assert!(err.to_string().contains("unsupported delivery channel"));
     }
 }

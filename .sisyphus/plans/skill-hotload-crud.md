@@ -157,7 +157,7 @@ Max Concurrent: 3 (Wave 1)
 > EVERY task MUST have: Recommended Agent Profile + Parallelization info + QA Scenarios.
 > TDD: Write failing test FIRST, then implement until green, then refactor.
 
-- [ ] 1. Add `skip_security_audit` to SkillsConfig
+- [x] 1. Add `skip_security_audit` to SkillsConfig
 
   **What to do**:
   - RED: Write test in `src/config/schema.rs` tests module: parse a TOML config with `[skills] skip_security_audit = true`, assert field is `true`. Write another test with field absent, assert default `false`.
@@ -244,7 +244,7 @@ Max Concurrent: 3 (Wave 1)
 
 ---
 
-- [ ] 2. Guard 5 audit call sites with `skip_security_audit` flag
+- [x] 2. Guard 5 audit call sites with `skip_security_audit` flag
 
   **What to do**:
   - RED: Write test `test_load_skills_skip_audit_allows_dangerous_skill` — create a skill dir with a `.sh` file (normally blocked), load with `skip_security_audit=true`, assert skill IS loaded.
@@ -337,7 +337,7 @@ Max Concurrent: 3 (Wave 1)
 
 ---
 
-- [ ] 3. SkillsState shared type + `reload_skills()` function
+- [x] 3. SkillsState shared type + `reload_skills()` function
   **What to do**:
   - RED: Write test `test_skills_state_default` — `SkillsState::new()` has empty skills and `dirty=false`.
   - RED: Write test `test_reload_skills_populates_state` — create temp workspace with a valid skill, call `reload_skills()`, assert skills vec is non-empty and dirty is reset to false.
@@ -396,7 +396,7 @@ Max Concurrent: 3 (Wave 1)
   - Files: `src/skills/mod.rs`
   - Pre-commit: `cargo test --lib -- skills::tests`
 ---
-- [ ] 4. skill_manage tool — CRUD implementation
+- [x] 4. skill_manage tool — CRUD implementation
   **What to do**:
   - RED: Write tests in `src/tools/skill_manage.rs` module:
     - `test_create_skill` — call execute with `action=create, name="test-skill", description="A test"`, assert SKILL.toml written to disk, assert valid TOML, assert dirty=true on shared state.
@@ -499,7 +499,7 @@ Max Concurrent: 3 (Wave 1)
   - Files: `src/tools/skill_manage.rs`
   - Pre-commit: `cargo test --lib -- tools::skill_manage::tests`
 ---
-- [ ] 5. Register skill_manage tool + add tool_descs entry
+- [x] 5. Register skill_manage tool + add tool_descs entry
   **What to do**:
   - RED: Write test that `all_tools_with_runtime()` returns a tool named `"skill_manage"` when shared state is provided.
   - GREEN: Add `mod skill_manage;` to `src/tools/mod.rs`.
@@ -562,7 +562,7 @@ Max Concurrent: 3 (Wave 1)
   - Files: `src/tools/mod.rs`, `src/agent/loop_.rs`
   - Pre-commit: `cargo build`
 ---
-- [ ] 6. Agent loop integration — shared state + hot-reload + prompt rebuild
+- [x] 6. Agent loop integration — shared state + hot-reload + prompt rebuild
   **What to do**:
   - RED: Write test `test_hot_reload_updates_system_prompt` — simulate: create SkillsState with dirty=true and new skill, call the prompt rebuild logic, assert history[0] contains new skill name.
   - RED: Write test `test_hot_reload_skipped_when_not_dirty` — dirty=false, assert history[0] unchanged.
@@ -656,7 +656,7 @@ Max Concurrent: 3 (Wave 1)
   - Files: `src/agent/loop_.rs`
   - Pre-commit: `cargo test --lib -- agent::tests`
 ---
-- [ ] 7. Integration tests + full validation
+- [x] 7. Integration tests + full validation
   **What to do**:
   - Write integration tests that exercise the full end-to-end flow:
     - `test_e2e_create_skill_and_reload` — Create a skill via `SkillManageTool::execute()`, verify SKILL.toml on disk, verify `load_skill_toml()` can parse it, verify dirty flag set.

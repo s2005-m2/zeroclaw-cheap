@@ -76,6 +76,26 @@ pub trait HookHandler: Send + Sync {
     ) -> HookResult<(String, String, String)> {
         HookResult::Continue((channel, recipient, content))
     }
+
+    async fn on_cron_delivery(
+        &self,
+        source: String,
+        channel: String,
+        recipient: String,
+        content: String,
+    ) -> HookResult<(String, String, String, String)> {
+        HookResult::Continue((source, channel, recipient, content))
+    }
+
+    async fn on_docs_sync_notify(
+        &self,
+        file_path: String,
+        channel: String,
+        recipient: String,
+        content: String,
+    ) -> HookResult<(String, String, String, String)> {
+        HookResult::Continue((file_path, channel, recipient, content))
+    }
 }
 
 #[cfg(test)]

@@ -883,6 +883,7 @@ impl Provider for BedrockProvider {
         ProviderCapabilities {
             native_tool_calling: true,
             vision: true,
+            video: false,
         }
     }
 

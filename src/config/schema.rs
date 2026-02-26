@@ -216,6 +216,10 @@ pub struct Config {
     /// VPN proxy configuration (`[vpn]`). Requires `--features vpn`.
     #[serde(default)]
     pub vpn: VpnConfig,
+
+    /// Feishu Docs bidirectional sync configuration (`[docs_sync]`). Requires `--features feishu-docs-sync`.
+    #[serde(default)]
+    pub docs_sync: DocsSyncConfig,
 }
 
 // ── Delegate Agents ──────────────────────────────────────────────
@@ -459,6 +463,56 @@ impl Default for VpnConfig {
     }
 }
 
+// ── Feishu Docs Sync ─────────────────────────────────────────────
+
+fn default_sync_files() -> Vec<String> {
+    vec![
+        "config.toml".into(),
+        "IDENTITY.md".into(),
+        "SOUL.md".into(),
+        "USER.md".into(),
+        "AGENTS.md".into(),
+    ]
+}
+
+fn default_sync_interval_secs() -> u64 {
+    60
+}
+
+/// Feishu Docs bidirectional sync configuration (`[docs_sync]` section).
+///
+/// Enables syncing local config files to/from a Feishu document.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocsSyncConfig {
+    /// Enable Feishu Docs sync. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Feishu document ID to sync with.
+    #[serde(default)]
+    pub document_id: String,
+    /// List of local files to sync (relative to workspace).
+    #[serde(default = "default_sync_files")]
+    pub sync_files: Vec<String>,
+    /// Sync polling interval in seconds. Default: 60.
+    #[serde(default = "default_sync_interval_secs")]
+    pub sync_interval_secs: u64,
+    /// Automatically create a Feishu document if document_id is empty.
+    #[serde(default)]
+    pub auto_create_doc: bool,
+}
+
+impl Default for DocsSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            document_id: String::new(),
+            sync_files: default_sync_files(),
+            sync_interval_secs: default_sync_interval_secs(),
+            auto_create_doc: false,
+        }
+    }
+}
+
 /// Agent orchestration configuration (`[agent]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgentConfig {
@@ -544,7 +598,7 @@ pub struct SkillsConfig {
     pub skip_security_audit: bool,
 }
 
-/// Multimodal (image) handling configuration (`[multimodal]` section).
+/// Multimodal (image + video) handling configuration (`[multimodal]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MultimodalConfig {
     /// Maximum number of image attachments accepted per request.
@@ -556,6 +610,12 @@ pub struct MultimodalConfig {
     /// Allow fetching remote image URLs (http/https). Disabled by default.
     #[serde(default)]
     pub allow_remote_fetch: bool,
+    /// Maximum number of video attachments accepted per request.
+    #[serde(default = "default_multimodal_max_videos")]
+    pub max_videos: usize,
+    /// Maximum video payload size in MiB.
+    #[serde(default = "default_multimodal_max_video_size_mb")]
+    pub max_video_size_mb: usize,
 }
 
 fn default_multimodal_max_images() -> usize {
@@ -566,12 +626,27 @@ fn default_multimodal_max_image_size_mb() -> usize {
     5
 }
 
+fn default_multimodal_max_videos() -> usize {
+    2
+}
+
+fn default_multimodal_max_video_size_mb() -> usize {
+    20
+}
+
 impl MultimodalConfig {
     /// Clamp configured values to safe runtime bounds.
     pub fn effective_limits(&self) -> (usize, usize) {
         let max_images = self.max_images.clamp(1, 16);
         let max_image_size_mb = self.max_image_size_mb.clamp(1, 20);
         (max_images, max_image_size_mb)
+    }
+
+    /// Clamp configured video values to safe runtime bounds.
+    pub fn effective_video_limits(&self) -> (usize, usize) {
+        let max_videos = self.max_videos.clamp(1, 8);
+        let max_video_size_mb = self.max_video_size_mb.clamp(1, 100);
+        (max_videos, max_video_size_mb)
     }
 }
 
@@ -580,6 +655,8 @@ impl Default for MultimodalConfig {
         Self {
             max_images: default_multimodal_max_images(),
             max_image_size_mb: default_multimodal_max_image_size_mb(),
+            max_videos: default_multimodal_max_videos(),
+            max_video_size_mb: default_multimodal_max_video_size_mb(),
             allow_remote_fetch: false,
         }
     }
@@ -1894,6 +1971,14 @@ fn default_runtime_trace_max_entries() -> usize {
 
 // ── Hooks ────────────────────────────────────────────────────────
 
+fn default_max_hooks() -> usize {
+    50
+}
+
+fn default_hook_timeout_secs() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HooksConfig {
     /// Enable lifecycle hook execution.
@@ -1903,6 +1988,27 @@ pub struct HooksConfig {
     pub enabled: bool,
     #[serde(default)]
     pub builtin: BuiltinHooksConfig,
+
+    /// Directory where dynamic hook scripts are stored.
+    ///
+    /// When `None`, defaults to `{workspace}/hooks/`.
+    #[serde(default)]
+    pub hooks_dir: Option<PathBuf>,
+
+    /// Skip the security audit when loading dynamic hooks.
+    ///
+    /// **Dangerous:** disabling the audit allows arbitrary hook code.
+    /// Keep `false` unless you fully trust the hooks directory.
+    #[serde(default)]
+    pub skip_security_audit: bool,
+
+    /// Maximum number of dynamic hooks that can be loaded.
+    #[serde(default = "default_max_hooks")]
+    pub max_hooks: usize,
+
+    /// Default timeout in seconds for hook execution.
+    #[serde(default = "default_hook_timeout_secs")]
+    pub default_timeout_secs: u64,
 }
 
 impl Default for HooksConfig {
@@ -1910,6 +2016,10 @@ impl Default for HooksConfig {
         Self {
             enabled: true,
             builtin: BuiltinHooksConfig::default(),
+            hooks_dir: None,
+            skip_security_audit: false,
+            max_hooks: default_max_hooks(),
+            default_timeout_secs: default_hook_timeout_secs(),
         }
     }
 }
@@ -3143,6 +3253,12 @@ pub struct LarkConfig {
     /// Not required (and ignored) for websocket mode.
     #[serde(default)]
     pub port: Option<u16>,
+    /// Streaming mode for progressive response delivery via CardKit card updates.
+    #[serde(default)]
+    pub stream_mode: StreamMode,
+    /// Minimum interval (ms) between card updates to avoid rate limits.
+    #[serde(default = "default_draft_update_interval_ms")]
+    pub draft_update_interval_ms: u64,
 }
 
 impl ChannelConfig for LarkConfig {
@@ -3177,6 +3293,12 @@ pub struct FeishuConfig {
     /// Not required (and ignored) for websocket mode.
     #[serde(default)]
     pub port: Option<u16>,
+    /// Streaming mode for progressive response delivery via CardKit card updates.
+    #[serde(default)]
+    pub stream_mode: StreamMode,
+    /// Minimum interval (ms) between card updates to avoid rate limits.
+    #[serde(default = "default_draft_update_interval_ms")]
+    pub draft_update_interval_ms: u64,
 }
 
 impl ChannelConfig for FeishuConfig {
@@ -3580,7 +3702,8 @@ impl Default for Config {
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
             mcp: McpConfig::default(),
-            vpn: VpnConfig::default(),
+        vpn: VpnConfig::default(),
+        docs_sync: DocsSyncConfig::default(),
         }
     }
 }
@@ -4871,6 +4994,7 @@ default_temperature = 0.7
             transcription: TranscriptionConfig::default(),
             mcp: McpConfig::default(),
             vpn: VpnConfig::default(),
+            docs_sync: DocsSyncConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -5047,6 +5171,7 @@ tool_dispatcher = "xml"
             transcription: TranscriptionConfig::default(),
             mcp: McpConfig::default(),
             vpn: VpnConfig::default(),
+            docs_sync: DocsSyncConfig::default(),
         };
 
         config.save().await.unwrap();
@@ -6905,6 +7030,8 @@ default_model = "legacy-model"
             use_feishu: true,
             receive_mode: LarkReceiveMode::Websocket,
             port: None,
+            stream_mode: StreamMode::default(),
+            draft_update_interval_ms: default_draft_update_interval_ms(),
         };
         let json = serde_json::to_string(&lc).unwrap();
         let parsed: LarkConfig = serde_json::from_str(&json).unwrap();
@@ -6927,6 +7054,8 @@ default_model = "legacy-model"
             use_feishu: false,
             receive_mode: LarkReceiveMode::Webhook,
             port: Some(9898),
+            stream_mode: StreamMode::default(),
+            draft_update_interval_ms: default_draft_update_interval_ms(),
         };
         let toml_str = toml::to_string(&lc).unwrap();
         let parsed: LarkConfig = toml::from_str(&toml_str).unwrap();
@@ -6972,6 +7101,8 @@ default_model = "legacy-model"
             allowed_users: vec!["user_123".into(), "user_456".into()],
             receive_mode: LarkReceiveMode::Websocket,
             port: None,
+            stream_mode: StreamMode::default(),
+            draft_update_interval_ms: default_draft_update_interval_ms(),
         };
         let json = serde_json::to_string(&fc).unwrap();
         let parsed: FeishuConfig = serde_json::from_str(&json).unwrap();
@@ -6992,6 +7123,8 @@ default_model = "legacy-model"
             allowed_users: vec!["*".into()],
             receive_mode: LarkReceiveMode::Webhook,
             port: Some(9898),
+            stream_mode: StreamMode::default(),
+            draft_update_interval_ms: default_draft_update_interval_ms(),
         };
         let toml_str = toml::to_string(&fc).unwrap();
         let parsed: FeishuConfig = toml::from_str(&toml_str).unwrap();

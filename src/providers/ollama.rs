@@ -460,6 +460,7 @@ impl Provider for OllamaProvider {
         ProviderCapabilities {
             native_tool_calling: true,
             vision: true,
+            video: false,
         }
     }
 

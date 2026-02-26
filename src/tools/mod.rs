@@ -32,6 +32,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod git_operations;
 pub mod glob_search;
+pub mod hook_write;
 pub mod hardware_board_info;
 pub mod hardware_memory_map;
 pub mod hardware_memory_read;
@@ -50,6 +51,7 @@ pub mod pushover;
 pub mod schedule;
 pub mod schema;
 pub mod screenshot;
+pub mod skill_manage;
 pub mod shell;
 pub mod traits;
 #[cfg(feature = "vpn")]
@@ -72,6 +74,7 @@ pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
 pub use glob_search::GlobSearchTool;
+pub use hook_write::HookWriteTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
 pub use mcp_bridge::McpBridgeTool;
@@ -87,6 +90,7 @@ pub use schedule::ScheduleTool;
 #[allow(unused_imports)]
 pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
+pub use skill_manage::SkillManageTool;
 pub use shell::ShellTool;
 pub use traits::Tool;
 #[allow(unused_imports)]
@@ -185,6 +189,7 @@ pub fn all_tools(
         agents,
         fallback_api_key,
         root_config,
+        None,
     )
 }
 
@@ -203,6 +208,7 @@ pub fn all_tools_with_runtime(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &crate::config::Config,
+    shared_skills: Option<Arc<tokio::sync::RwLock<crate::skills::SkillsState>>>,
 ) -> Vec<Box<dyn Tool>> {
     let mut tool_arcs: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ShellTool::new(security.clone(), runtime)),
@@ -387,6 +393,17 @@ pub fn all_tools_with_runtime(
         .with_parent_tools(parent_tools)
         .with_multimodal_config(root_config.multimodal.clone());
         tool_arcs.push(Arc::new(delegate_tool));
+    }
+
+    // Register skill_manage tool when shared skills state is provided
+    if let Some(ref shared) = shared_skills {
+        let skills_dir = workspace_dir.join("skills");
+        tool_arcs.push(Arc::new(SkillManageTool::new(
+            skills_dir,
+            shared.clone(),
+            workspace_dir.to_path_buf(),
+            Arc::new(root_config.clone()),
+        )));
     }
 
     boxed_registry_from_arcs(tool_arcs)

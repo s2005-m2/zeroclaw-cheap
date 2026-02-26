@@ -105,13 +105,22 @@ impl WhatsAppChannel {
                         continue;
                     }
 
-                    // Extract text content (support text messages only for now)
+                    // Extract content (text and video messages supported)
                     let content = if let Some(text_obj) = msg.get("text") {
                         text_obj
                             .get("body")
                             .and_then(|b| b.as_str())
                             .unwrap_or("")
                             .to_string()
+                    } else if msg.get("type").and_then(|t| t.as_str()) == Some("video") {
+                        // Video message — generate VIDEO marker with media ID
+                        if let Some(video) = msg.get("video") {
+                            let media_id = video.get("id").and_then(|id| id.as_str()).unwrap_or("unknown");
+                            format!("[VIDEO:whatsapp-media://{}]", media_id)
+                        } else {
+                            tracing::debug!("WhatsApp: video message missing video object from {from}");
+                            continue;
+                        }
                     } else {
                         // Could be image, audio, etc. — skip for now
                         tracing::debug!("WhatsApp: skipping non-text message from {from}");
@@ -757,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn whatsapp_parse_video_message_skipped() {
+    fn whatsapp_parse_video_message_generates_marker() {
         let ch = WhatsAppChannel::new("tok".into(), "123".into(), "ver".into(), vec!["*".into()]);
         let payload = serde_json::json!({
             "entry": [{
@@ -774,7 +783,28 @@ mod tests {
             }]
         });
         let msgs = ch.parse_webhook_payload(&payload);
-        assert!(msgs.is_empty());
+        assert_eq!(msgs.len(), 1, "Video message should be parsed, not skipped");
+        assert_eq!(msgs[0].content, "[VIDEO:whatsapp-media://video123]");
+    }
+
+    #[test]
+    fn whatsapp_parse_video_message_missing_video_object_skipped() {
+        let ch = WhatsAppChannel::new("tok".into(), "123".into(), "ver".into(), vec!["*".into()]);
+        let payload = serde_json::json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "messages": [{
+                            "from": "111",
+                            "timestamp": "1",
+                            "type": "video"
+                        }]
+                    }
+                }]
+            }]
+        });
+        let msgs = ch.parse_webhook_payload(&payload);
+        assert!(msgs.is_empty(), "Video message without video object should be skipped");
     }
 
     #[test]

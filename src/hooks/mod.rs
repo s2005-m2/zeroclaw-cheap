@@ -1,4 +1,13 @@
+pub mod audit;
 pub mod builtin;
+pub mod cli;
+pub mod dynamic;
+pub mod loader;
+pub mod manifest;
+pub mod reload;
+pub use dynamic::*;
+pub use loader::*;
+pub use manifest::*;
 mod runner;
 mod traits;
 
@@ -8,3 +17,5 @@ pub use runner::HookRunner;
 // external integrations and future plugin authors.
 #[allow(unused_imports)]
 pub use traits::{HookHandler, HookResult};
+#[cfg(test)]
+mod integration_tests;

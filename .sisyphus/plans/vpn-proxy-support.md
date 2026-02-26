@@ -819,7 +819,7 @@ Max Concurrent: 5 (Wave 1)
   - Message: `feat(vpn): add health checker and latency tester`
   - Files: `src/vpn/health.rs`, `src/vpn/mod.rs`
   - Pre-commit: `cargo test --features vpn`
-- [ ] 10. Node Manager (Selection Strategy + Failover Logic)
+- [x] 10. Node Manager (Selection Strategy + Failover Logic)
   **What to do**:
   - Expand `src/vpn/node_manager.rs` (started in Task 8 with persistence)
   - Struct `NodeManager` with methods:
@@ -885,7 +885,7 @@ Max Concurrent: 5 (Wave 1)
   - Message: `feat(vpn): add node manager with selection strategy`
   - Files: `src/vpn/node_manager.rs`
   - Pre-commit: `cargo test --features vpn`
-- [ ] 11. VPN ↔ ProxyConfig Bridge (Runtime Proxy Integration)
+- [x] 11. VPN ↔ ProxyConfig Bridge (Runtime Proxy Integration)
   **What to do**:
   - Create `src/vpn/bridge.rs`
   - Struct `VpnProxyBridge` with methods:
@@ -953,7 +953,7 @@ Max Concurrent: 5 (Wave 1)
   - Message: `feat(vpn): bridge VPN to ProxyConfig runtime`
   - Files: `src/vpn/bridge.rs`, `src/vpn/mod.rs`
   - Pre-commit: `cargo test --features vpn`
-- [ ] 12. vpn_control Tool Implementation
+- [x] 12. vpn_control Tool Implementation
   **What to do**:
   - Create `src/tools/vpn_control.rs`
   - Implement `Tool` trait for `VpnControlTool`
@@ -1023,7 +1023,7 @@ Max Concurrent: 5 (Wave 1)
   - Message: `feat(vpn): add vpn_control tool`
   - Files: `src/tools/vpn_control.rs`
   - Pre-commit: `cargo test --features vpn`
-- [ ] 13. Module Registration + Tool Wiring + Startup/Shutdown
+- [x] 13. Module Registration + Tool Wiring + Startup/Shutdown
   **What to do**:
   - Wire VPN module into ZeroClaw runtime:
     - Register `vpn_control` tool in `src/tools/mod.rs` behind `#[cfg(feature = "vpn")]`
@@ -1089,7 +1089,7 @@ Max Concurrent: 5 (Wave 1)
   - Message: `feat(vpn): wire VPN module into runtime`
   - Files: `src/vpn/mod.rs`, `src/tools/mod.rs`, `src/config/schema.rs`, entry point file
   - Pre-commit: `cargo test --features vpn && cargo check`
-- [ ] 14. Integration Tests (Full Flow)
+- [x] 14. Integration Tests (Full Flow)
   **What to do**:
   - Create `tests/vpn_integration.rs` (behind `#[cfg(feature = "vpn")]`)
   - Test scenarios:

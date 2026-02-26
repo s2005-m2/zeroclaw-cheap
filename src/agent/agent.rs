@@ -11,6 +11,7 @@ use crate::runtime;
 use crate::security::SecurityPolicy;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
+use futures_util::FutureExt;
 use std::fmt::Write as _;
 use std::io::Write as IoWrite;
 use std::sync::Arc;
@@ -38,6 +39,9 @@ pub struct Agent {
     available_hints: Vec<String>,
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
     mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
+    mcp_generation: u64,
+    mcp_cached_context: String,
+    hook_runner: Arc<crate::hooks::HookRunner>,
 }
 
 pub struct AgentBuilder {
@@ -60,6 +64,7 @@ pub struct AgentBuilder {
     available_hints: Option<Vec<String>>,
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
     mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
+    hook_runner: Option<Arc<crate::hooks::HookRunner>>,
 }
 
 impl AgentBuilder {
@@ -84,6 +89,7 @@ impl AgentBuilder {
             available_hints: None,
             mcp_registry: None,
             mcp_pending_configs: Vec::new(),
+            hook_runner: None,
         }
     }
 
@@ -183,6 +189,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn hook_runner(mut self, hook_runner: Arc<crate::hooks::HookRunner>) -> Self {
+        self.hook_runner = Some(hook_runner);
+        self
+    }
+
     pub fn mcp_pending_configs(
         mut self,
         configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
@@ -235,6 +246,9 @@ impl AgentBuilder {
             available_hints: self.available_hints.unwrap_or_default(),
             mcp_registry: self.mcp_registry,
             mcp_pending_configs: self.mcp_pending_configs,
+            mcp_generation: u64::MAX,
+            mcp_cached_context: String::new(),
+            hook_runner: self.hook_runner.unwrap_or_else(|| Arc::new(crate::hooks::HookRunner::new())),
         })
     }
 }
@@ -315,6 +329,7 @@ impl Agent {
             &config.agents,
             config.api_key.as_deref(),
             config,
+            None,  // shared_skills
         );
 
         // Wire MCP if enabled
@@ -408,6 +423,15 @@ impl Agent {
             .skills_prompt_mode(config.skills.prompt_injection_mode)
             .auto_save(config.memory.auto_save);
 
+        // Wire hooks if enabled (mirrors channels/mod.rs pattern)
+        if config.hooks.enabled {
+            let mut runner = crate::hooks::HookRunner::new();
+            if config.hooks.builtin.command_logger {
+                runner.register(Box::new(crate::hooks::builtin::CommandLoggerHook::new()));
+            }
+            builder = builder.hook_runner(Arc::new(runner));
+        }
+
         if let Some(registry) = mcp_registry {
             builder = builder.mcp_registry(registry);
         }
@@ -461,9 +485,29 @@ impl Agent {
 
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
         let start = Instant::now();
+        // Hook: before_tool_call — respect Cancel
+        let (tool_name, tool_args) = match self.hook_runner.run_before_tool_call(
+            call.name.clone(),
+            call.arguments.clone(),
+        ).await {
+            crate::hooks::HookResult::Continue(pair) => pair,
+            crate::hooks::HookResult::Cancel(reason) => {
+                tracing::info!(
+                    tool = call.name.as_str(),
+                    reason = reason.as_str(),
+                    "before_tool_call cancelled by hook"
+                );
+                return ToolExecutionResult {
+                    name: call.name.clone(),
+                    output: format!("Tool call cancelled by hook: {}", reason),
+                    success: false,
+                    tool_call_id: call.tool_call_id.clone(),
+                };
+            }
+        };
 
-        let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
-            match tool.execute(call.arguments.clone()).await {
+        let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == tool_name) {
+            match tool.execute(tool_args).await {
                 Ok(r) => {
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
@@ -486,8 +530,20 @@ impl Agent {
                 }
             }
         } else {
-            format!("Unknown tool: {}", call.name)
+            format!("Unknown tool: {}", tool_name)
         };
+
+        // Hook: fire_after_tool_call (void, fire-and-forget)
+        let tool_result = crate::tools::ToolResult {
+            success: true,
+            output: result.clone(),
+            error: None,
+        };
+        if let Err(e) = std::panic::AssertUnwindSafe(
+            self.hook_runner.fire_after_tool_call(&call.name, &tool_result, start.elapsed())
+        ).catch_unwind().await {
+            tracing::warn!("hook fire_after_tool_call panicked: {:?}", e);
+        }
 
         ToolExecutionResult {
             name: call.name.clone(),
@@ -524,6 +580,16 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        // Fire session_start hook (void, errors logged internally)
+        let session_id = format!("cli-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis());
+        if let Err(e) = std::panic::AssertUnwindSafe(
+            self.hook_runner.fire_session_start(&session_id, "cli")
+        ).catch_unwind().await {
+            tracing::warn!("hook fire_session_start panicked: {:?}", e);
+        }
         // Connect pending MCP servers on first turn (deferred from sync from_config)
         if !self.mcp_pending_configs.is_empty() {
             if let Some(ref registry) = self.mcp_registry {
@@ -565,54 +631,65 @@ impl Agent {
             self.tools.extend(bridge_tools);
             self.tool_specs = self.tools.iter().map(|t| t.spec()).collect();
 
-            // Inject MCP resources and prompts into system prompt
-            let resources = registry.get_all_resources().await;
-            let prompts = registry.get_all_prompts().await;
+            // Inject MCP resources and prompts into system prompt (cached by generation)
+            let current_gen = registry.generation();
+            if current_gen != self.mcp_generation {
+                self.mcp_generation = current_gen;
+                let resources = registry.get_all_resources().await;
+                let prompts = registry.get_all_prompts().await;
+                let mut mcp_context = String::new();
+                if !resources.is_empty() || !prompts.is_empty() {
+                    mcp_context.push_str("\n```\n");
+                    if !resources.is_empty() {
+                        mcp_context.push_str("[MCP Resources]\n");
+                        for (server, res) in &resources {
+                            let desc = sanitize_mcp_text(
+                                res.description.as_deref().unwrap_or(""),
+                                256,
+                            );
+                            let server_s = sanitize_mcp_text(server, 256);
+                            let uri_s = sanitize_mcp_text(&res.uri, 256);
+                            let _ = writeln!(
+                                mcp_context,
+                                "  {}: {} \u{2014} {}",
+                                server_s, uri_s, desc
+                            );
+                        }
+                    }
+                    if !prompts.is_empty() {
+                        mcp_context.push_str("\n[MCP Prompts]\n");
+                        for (server, prompt) in &prompts {
+                            let desc = sanitize_mcp_text(
+                                prompt.description.as_deref().unwrap_or(""),
+                                256,
+                            );
+                            let server_s = sanitize_mcp_text(server, 256);
+                            let name_s = sanitize_mcp_text(&prompt.name, 256);
+                            let _ = writeln!(
+                                mcp_context,
+                                "  {}: {} \u{2014} {}",
+                                server_s, name_s, desc
+                            );
+                        }
+                    }
+                    mcp_context.push_str("```\n");
+                }
+                self.mcp_cached_context = mcp_context;
+            }
             if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {
                 if sys_msg.role == "system" {
                     // Strip previous MCP context to prevent accumulation across turns
                     if let Some(start) = sys_msg
                         .content
-                        .find("\n[MCP Resources]\n")
+                        .find("\n```\n[MCP Resources]")
+                        .or_else(|| sys_msg.content.find("\n```\n[MCP Prompts]"))
+                        .or_else(|| sys_msg.content.find("\n[MCP Resources]\n"))
                         .or_else(|| sys_msg.content.find("\n[MCP Prompts]\n"))
                     {
                         sys_msg.content.truncate(start);
                     }
-                    if !resources.is_empty() || !prompts.is_empty() {
-                        let mut mcp_context = String::new();
-                        if !resources.is_empty() {
-                            mcp_context.push_str("\n[MCP Resources]\n");
-                            for (server, res) in &resources {
-                                let desc = sanitize_mcp_text(
-                                    res.description.as_deref().unwrap_or(""),
-                                    256,
-                                );
-                                let server_s = sanitize_mcp_text(server, 256);
-                                let uri_s = sanitize_mcp_text(&res.uri, 256);
-                                let _ = writeln!(
-                                    mcp_context,
-                                    "  {}: {} \u{2014} {}",
-                                    server_s, uri_s, desc
-                                );
-                            }
-                        }
-                        if !prompts.is_empty() {
-                            mcp_context.push_str("\n[MCP Prompts]\n");
-                            for (server, prompt) in &prompts {
-                                let desc = sanitize_mcp_text(
-                                    prompt.description.as_deref().unwrap_or(""),
-                                    256,
-                                );
-                                let server_s = sanitize_mcp_text(server, 256);
-                                let name_s = sanitize_mcp_text(&prompt.name, 256);
-                                let _ = writeln!(
-                                    mcp_context,
-                                    "  {}: {} \u{2014} {}",
-                                    server_s, name_s, desc
-                                );
-                            }
-                        }
-                        sys_msg.content.push_str(&mcp_context);
+                    if !self.mcp_cached_context.is_empty() {
+                        sys_msg.content.push_str(&self.mcp_cached_context);
                     }
                 }
             }
@@ -620,6 +697,18 @@ impl Agent {
 
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
+            // Hook: before_prompt_build — respect Cancel
+            let system_prompt = match self.hook_runner.run_before_prompt_build(system_prompt).await {
+                crate::hooks::HookResult::Continue(p) => p,
+                crate::hooks::HookResult::Cancel(reason) => {
+                    tracing::info!(reason = reason.as_str(), "before_prompt_build cancelled by hook");
+                    // Fire session_end before returning
+                    let _ = std::panic::AssertUnwindSafe(
+                        self.hook_runner.fire_session_end(&session_id, "cli")
+                    ).catch_unwind().await;
+                    anyhow::bail!("Turn cancelled by hook: {}", reason);
+                }
+            };
             self.history
                 .push(ConversationMessage::Chat(ChatMessage::system(
                     system_prompt,
@@ -652,6 +741,17 @@ impl Agent {
 
         for _ in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            // Hook: before_llm_call — respect Cancel
+            let (messages, hook_model) = match self.hook_runner.run_before_llm_call(messages, effective_model.clone()).await {
+                crate::hooks::HookResult::Continue(pair) => pair,
+                crate::hooks::HookResult::Cancel(reason) => {
+                    tracing::info!(reason = reason.as_str(), "before_llm_call cancelled by hook");
+                    let _ = std::panic::AssertUnwindSafe(
+                        self.hook_runner.fire_session_end(&session_id, "cli")
+                    ).catch_unwind().await;
+                    anyhow::bail!("LLM call cancelled by hook: {}", reason);
+                }
+            };
             let response = match self
                 .provider
                 .chat(
@@ -663,7 +763,7 @@ impl Agent {
                             None
                         },
                     },
-                    &effective_model,
+                    &hook_model,
                     self.temperature,
                 )
                 .await
@@ -671,6 +771,12 @@ impl Agent {
                 Ok(resp) => resp,
                 Err(err) => return Err(err),
             };
+            // Hook: fire_llm_output (void, fire-and-forget)
+            if let Err(e) = std::panic::AssertUnwindSafe(
+                self.hook_runner.fire_llm_output(&response)
+            ).catch_unwind().await {
+                tracing::warn!("hook fire_llm_output panicked: {:?}", e);
+            }
 
             let (text, calls) = self.tool_dispatcher.parse_response(&response);
             if calls.is_empty() {
@@ -685,6 +791,11 @@ impl Agent {
                         final_text.clone(),
                     )));
                 self.trim_history();
+
+                // Hook: fire_session_end (void)
+                let _ = std::panic::AssertUnwindSafe(
+                    self.hook_runner.fire_session_end(&session_id, "cli")
+                ).catch_unwind().await;
 
                 return Ok(final_text);
             }
@@ -710,6 +821,10 @@ impl Agent {
             self.trim_history();
         }
 
+        // Hook: fire_session_end before bail
+        let _ = std::panic::AssertUnwindSafe(
+            self.hook_runner.fire_session_end(&session_id, "cli")
+        ).catch_unwind().await;
         anyhow::bail!(
             "Agent exceeded maximum tool iterations ({})",
             self.config.max_tool_iterations

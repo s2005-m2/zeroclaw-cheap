@@ -4,6 +4,7 @@
 //! their discovered tools, and tool execution routing.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -28,6 +29,7 @@ pub struct McpRegistry {
     servers: Arc<RwLock<HashMap<String, McpServerState>>>,
     tool_cap: usize,
     builtin_tool_names: HashSet<String>,
+    generation: AtomicU64,
 }
 
 impl McpRegistry {
@@ -41,7 +43,13 @@ impl McpRegistry {
             servers: Arc::new(RwLock::new(HashMap::new())),
             tool_cap,
             builtin_tool_names,
+            generation: AtomicU64::new(0),
         }
+    }
+
+    /// Get the current generation counter (incremented on add/remove)
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     /// Validate that a server name is non-empty and not whitespace-only
@@ -116,6 +124,7 @@ impl McpRegistry {
                 config,
             },
         );
+        self.generation.fetch_add(1, Ordering::SeqCst);
 
         info!(
             "MCP server '{}' added successfully with {} tools",
@@ -139,7 +148,10 @@ impl McpRegistry {
             .await
             .with_context(|| format!("Failed to list tools from MCP server '{}'", name))?;
         debug!("MCP server '{}' advertised {} tools", name, tools.len());
-        self.validate_tools(&tools, &name).await?;
+        if let Err(e) = self.validate_tools(&tools, &name).await {
+            let _ = client.close().await;
+            return Err(e);
+        }
         let mut servers = self.servers.write().await;
         let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
         if current_tool_count + tools.len() > self.tool_cap {
@@ -161,6 +173,7 @@ impl McpRegistry {
                 config,
             },
         );
+        self.generation.fetch_add(1, Ordering::SeqCst);
         info!(
             "MCP server '{}' added successfully with {} tools",
             name,
@@ -228,6 +241,7 @@ impl McpRegistry {
         let server = servers
             .remove(name)
             .with_context(|| format!("MCP server '{}' not found", name))?;
+        self.generation.fetch_add(1, Ordering::SeqCst);
 
         server
             .client

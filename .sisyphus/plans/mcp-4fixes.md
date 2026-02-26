@@ -121,7 +121,7 @@ Max Concurrent: 4 (Wave 1)
 > Implementation + Test = ONE Task. Never separate.
 > EVERY task MUST have: Recommended Agent Profile + Parallelization info + QA Scenarios.
 
-- [ ] 1. **Fix MCP context accumulation in system prompt**
+- [x] 1. **Fix MCP context accumulation in system prompt**
 
   **What to do**:
   - In `agent.rs` `turn()`, before injecting MCP resources/prompts into the system message, strip any previous MCP context first
@@ -219,7 +219,7 @@ Max Concurrent: 4 (Wave 1)
   - Pre-commit: `cargo check --bin zeroclaw`
 
 
-- [ ] 2. **Close client on validate_tools failure in add_server()**
+- [x] 2. **Close client on validate_tools failure in add_server()**
 
   **What to do**:
   - In `registry.rs` `add_server()`, line 92: `self.validate_tools(&tools, &server_name).await?;`
@@ -278,7 +278,7 @@ Max Concurrent: 4 (Wave 1)
   - Message: `fix(mcp): close client on validate_tools failure to prevent process leak`
   - Files: `crates/zeroclaw-mcp/src/registry.rs`
   - Pre-commit: `cargo test --package zeroclaw-mcp`
-- [ ] 3. **Safe Drop impl to prevent panic in StdioTransport**
+- [x] 3. **Safe Drop impl to prevent panic in StdioTransport**
 
   **What to do**:
   - In `transport.rs` Drop impl, line 242: `self.child.try_wait().unwrap().is_some()`
@@ -343,7 +343,7 @@ Max Concurrent: 4 (Wave 1)
   - Files: `crates/zeroclaw-mcp/src/transport.rs`
   - Pre-commit: `cargo test --package zeroclaw-mcp`
 
-- [ ] 4. **Release read lock before IPC in registry call_tool/get_all_resources/get_all_prompts**
+- [x] 4. **Release read lock before IPC in registry call_tool/get_all_resources/get_all_prompts**
 
   **What to do**:
   - Three methods in `registry.rs` hold `servers.read().await` during network IPC, blocking all write operations
@@ -446,7 +446,7 @@ Max Concurrent: 4 (Wave 1)
   - Message: `fix(mcp): release read lock before IPC in registry methods`
   - Files: `crates/zeroclaw-mcp/src/registry.rs`
   - Pre-commit: `cargo test --package zeroclaw-mcp`
-- [ ] 5. **Full cargo fmt + clippy + test verification**
+- [x] 5. **Full cargo fmt + clippy + test verification**
   **What to do**:
   - Run `cargo fmt --all -- --check` and fix any formatting issues from Tasks 1-4
   - Run `cargo clippy --all-targets -- -D warnings` and fix any warnings
@@ -487,19 +487,19 @@ Max Concurrent: 4 (Wave 1)
 
 > 4 review agents run in PARALLEL. ALL must APPROVE. Rejection → fix → re-run.
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. For each "Must Have": verify implementation exists. For each "Must NOT Have": search codebase for forbidden patterns. Check evidence files exist.
   Output: `Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   Run `cargo fmt --all -- --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test`. Review changed files for unwrap in non-test code, empty catches, unused imports.
   Output: `Build [PASS/FAIL] | Lint [PASS/FAIL] | Tests [N pass/N fail] | VERDICT`
 
-- [ ] F3. **Real Manual QA** — `unspecified-high`
+- [x] F3. **Real Manual QA** — `unspecified-high`
   Run `cargo test` end-to-end. Verify each new test exists and passes. Check no existing tests removed.
   Output: `Tests [N/N pass] | New Tests [N added] | VERDICT`
 
-- [ ] F4. **Scope Fidelity Check** — `deep`
+- [x] F4. **Scope Fidelity Check** — `deep`
   For each task: read "What to do", read actual diff. Verify 1:1 match. Check "Must NOT do" compliance. Flag unaccounted changes.
   Output: `Tasks [N/N compliant] | Unaccounted [CLEAN/N files] | VERDICT`
 

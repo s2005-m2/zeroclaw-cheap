@@ -5,6 +5,7 @@ use reqwest::Client;
 use std::path::Path;
 
 const IMAGE_MARKER_PREFIX: &str = "[IMAGE:";
+const VIDEO_MARKER_PREFIX: &str = "[VIDEO:";
 const ALLOWED_IMAGE_MIME_TYPES: &[&str] = &[
     "image/png",
     "image/jpeg",
@@ -13,16 +14,28 @@ const ALLOWED_IMAGE_MIME_TYPES: &[&str] = &[
     "image/bmp",
 ];
 
+const ALLOWED_VIDEO_MIME_TYPES: &[&str] = &[
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+    "video/x-matroska",
+    "video/x-msvideo",
+];
+
 #[derive(Debug, Clone)]
 pub struct PreparedMessages {
     pub messages: Vec<ChatMessage>,
     pub contains_images: bool,
+    pub contains_videos: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultimodalError {
     #[error("multimodal image limit exceeded: max_images={max_images}, found={found}")]
     TooManyImages { max_images: usize, found: usize },
+
+    #[error("multimodal video limit exceeded: max_videos={max_videos}, found={found}")]
+    TooManyVideos { max_videos: usize, found: usize },
 
     #[error("multimodal image size limit exceeded for '{input}': {size_bytes} bytes > {max_bytes} bytes")]
     ImageTooLarge {
@@ -85,6 +98,53 @@ pub fn parse_image_markers(content: &str) -> (String, Vec<String>) {
     (cleaned.trim().to_string(), refs)
 }
 
+pub fn parse_video_markers(content: &str) -> (String, Vec<String>) {
+    let mut refs = Vec::new();
+    let mut cleaned = String::with_capacity(content.len());
+    let mut cursor = 0usize;
+
+    while let Some(rel_start) = content[cursor..].find(VIDEO_MARKER_PREFIX) {
+        let start = cursor + rel_start;
+        cleaned.push_str(&content[cursor..start]);
+
+        let marker_start = start + VIDEO_MARKER_PREFIX.len();
+        let Some(rel_end) = content[marker_start..].find(']') else {
+            cleaned.push_str(&content[start..]);
+            cursor = content.len();
+            break;
+        };
+
+        let end = marker_start + rel_end;
+        let candidate = content[marker_start..end].trim();
+
+        if candidate.is_empty() {
+            cleaned.push_str(&content[start..=end]);
+        } else {
+            refs.push(candidate.to_string());
+        }
+
+        cursor = end + 1;
+    }
+
+    if cursor < content.len() {
+        cleaned.push_str(&content[cursor..]);
+    }
+
+    (cleaned.trim().to_string(), refs)
+}
+
+pub fn count_video_markers(messages: &[ChatMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| parse_video_markers(&m.content).1.len())
+        .sum()
+}
+
+pub fn contains_video_markers(messages: &[ChatMessage]) -> bool {
+    count_video_markers(messages) > 0
+}
+
 pub fn count_image_markers(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
@@ -118,6 +178,7 @@ pub async fn prepare_messages_for_provider(
 ) -> anyhow::Result<PreparedMessages> {
     let (max_images, max_image_size_mb) = config.effective_limits();
     let max_bytes = max_image_size_mb.saturating_mul(1024 * 1024);
+    let (max_videos, _max_video_size_mb) = config.effective_video_limits();
 
     let found_images = count_image_markers(messages);
     if found_images > max_images {
@@ -128,10 +189,20 @@ pub async fn prepare_messages_for_provider(
         .into());
     }
 
-    if found_images == 0 {
+    let found_videos = count_video_markers(messages);
+    if found_videos > max_videos {
+        return Err(MultimodalError::TooManyVideos {
+            max_videos,
+            found: found_videos,
+        }
+        .into());
+    }
+
+    if found_images == 0 && found_videos == 0 {
         return Ok(PreparedMessages {
             messages: messages.to_vec(),
             contains_images: false,
+            contains_videos: false,
         });
     }
 
@@ -144,20 +215,22 @@ pub async fn prepare_messages_for_provider(
             continue;
         }
 
-        let (cleaned_text, refs) = parse_image_markers(&message.content);
-        if refs.is_empty() {
+        let (text_after_images, image_refs) = parse_image_markers(&message.content);
+        let (cleaned_text, video_refs) = parse_video_markers(&text_after_images);
+
+        if image_refs.is_empty() && video_refs.is_empty() {
             normalized_messages.push(message.clone());
             continue;
         }
 
-        let mut normalized_refs = Vec::with_capacity(refs.len());
-        for reference in refs {
+        let mut normalized_image_refs = Vec::with_capacity(image_refs.len());
+        for reference in &image_refs {
             let data_uri =
-                normalize_image_reference(&reference, config, max_bytes, &remote_client).await?;
-            normalized_refs.push(data_uri);
+                normalize_image_reference(reference, config, max_bytes, &remote_client).await?;
+            normalized_image_refs.push(data_uri);
         }
 
-        let content = compose_multimodal_message(&cleaned_text, &normalized_refs);
+        let content = compose_multimodal_message(&cleaned_text, &normalized_image_refs, &video_refs);
         normalized_messages.push(ChatMessage {
             role: message.role.clone(),
             content,
@@ -166,11 +239,12 @@ pub async fn prepare_messages_for_provider(
 
     Ok(PreparedMessages {
         messages: normalized_messages,
-        contains_images: true,
+        contains_images: found_images > 0,
+        contains_videos: found_videos > 0,
     })
 }
 
-fn compose_multimodal_message(text: &str, data_uris: &[String]) -> String {
+fn compose_multimodal_message(text: &str, data_uris: &[String], video_urls: &[String]) -> String {
     let mut content = String::new();
     let trimmed = text.trim();
 
@@ -185,6 +259,15 @@ fn compose_multimodal_message(text: &str, data_uris: &[String]) -> String {
         }
         content.push_str(IMAGE_MARKER_PREFIX);
         content.push_str(data_uri);
+        content.push(']');
+    }
+
+    for video_url in video_urls {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(VIDEO_MARKER_PREFIX);
+        content.push_str(video_url);
         content.push(']');
     }
 
@@ -443,6 +526,41 @@ fn mime_from_magic(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+pub fn video_mime_from_extension(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "mp4" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mov" => Some("video/quicktime"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
+        _ => None,
+    }
+}
+
+pub fn video_mime_from_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        return Some("video/mp4");
+    }
+
+    if bytes.len() >= 4 && bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        return Some("video/webm");
+    }
+
+    None
+}
+
+pub fn validate_video_mime(source: &str, mime: &str) -> anyhow::Result<()> {
+    if ALLOWED_VIDEO_MIME_TYPES.contains(&mime) {
+        return Ok(());
+    }
+
+    Err(MultimodalError::UnsupportedMime {
+        input: source.to_string(),
+        mime: mime.to_string(),
+    }
+    .into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +625,8 @@ mod tests {
             max_images: 1,
             max_image_size_mb: 5,
             allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
         };
 
         let error = prepare_messages_for_provider(&messages, &config)
@@ -549,6 +669,8 @@ mod tests {
             max_images: 4,
             max_image_size_mb: 1,
             allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
         };
 
         let error = prepare_messages_for_provider(&messages, &config)
@@ -565,5 +687,258 @@ mod tests {
         let payload = extract_ollama_image_payload("data:image/png;base64,abcd==")
             .expect("payload should be extracted");
         assert_eq!(payload, "abcd==");
+    }
+
+    #[test]
+    fn parse_video_markers_extracts_multiple_markers() {
+        let input = "Check [VIDEO:https://example.com/v.mp4] and [VIDEO:https://example.com/w.webm]";
+        let (cleaned, refs) = parse_video_markers(input);
+        assert_eq!(cleaned, "Check  and");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0], "https://example.com/v.mp4");
+        assert_eq!(refs[1], "https://example.com/w.webm");
+    }
+
+    #[test]
+    fn parse_video_markers_keeps_empty_marker() {
+        let input = "hello [VIDEO:] world";
+        let (cleaned, refs) = parse_video_markers(input);
+        assert_eq!(cleaned, "hello [VIDEO:] world");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn video_and_image_markers_coexist() {
+        let input = "See [IMAGE:a.png] and [VIDEO:v.mp4] here";
+        let (img_cleaned, img_refs) = parse_image_markers(input);
+        let (vid_cleaned, vid_refs) = parse_video_markers(input);
+
+        assert_eq!(img_refs.len(), 1);
+        assert_eq!(img_refs[0], "a.png");
+        assert!(img_cleaned.contains("[VIDEO:v.mp4]"));
+
+        assert_eq!(vid_refs.len(), 1);
+        assert_eq!(vid_refs[0], "v.mp4");
+        assert!(vid_cleaned.contains("[IMAGE:a.png]"));
+    }
+
+    #[test]
+    fn video_mime_from_extension_maps_correctly() {
+        assert_eq!(video_mime_from_extension("mp4"), Some("video/mp4"));
+        assert_eq!(video_mime_from_extension("webm"), Some("video/webm"));
+        assert_eq!(video_mime_from_extension("mov"), Some("video/quicktime"));
+        assert_eq!(video_mime_from_extension("mkv"), Some("video/x-matroska"));
+        assert_eq!(video_mime_from_extension("avi"), Some("video/x-msvideo"));
+        assert_eq!(video_mime_from_extension("txt"), None);
+    }
+
+    #[test]
+    fn video_mime_from_magic_detects_mp4_ftyp() {
+        let bytes: &[u8] = &[0x00, 0x00, 0x00, 0x20, b'f', b't', b'y', b'p'];
+        assert_eq!(video_mime_from_magic(bytes), Some("video/mp4"));
+    }
+
+    #[test]
+    fn video_mime_from_magic_detects_webm_ebml() {
+        let bytes: &[u8] = &[0x1a, 0x45, 0xdf, 0xa3];
+        assert_eq!(video_mime_from_magic(bytes), Some("video/webm"));
+    }
+
+    #[test]
+    fn validate_video_mime_accepts_valid_rejects_invalid() {
+        assert!(validate_video_mime("test.mp4", "video/mp4").is_ok());
+        assert!(validate_video_mime("test.png", "image/png").is_err());
+    }
+
+    #[tokio::test]
+    async fn prepare_messages_video_url_passthrough() {
+        let messages = vec![ChatMessage::user(
+            "Watch this [VIDEO:https://example.com/v.mp4]".to_string(),
+        )];
+        let config = MultimodalConfig {
+            max_images: 4,
+            max_image_size_mb: 5,
+            allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
+        };
+        let prepared = prepare_messages_for_provider(&messages, &config)
+            .await
+            .unwrap();
+        assert!(prepared.contains_videos);
+        assert!(!prepared.contains_images);
+        assert_eq!(prepared.messages.len(), 1);
+        let content = &prepared.messages[0].content;
+        assert!(content.contains("[VIDEO:https://example.com/v.mp4]"));
+        assert!(content.contains("Watch this"));
+    }
+    #[tokio::test]
+    async fn prepare_messages_rejects_too_many_videos() {
+        let messages = vec![ChatMessage::user(
+            "[VIDEO:https://a.mp4]\n[VIDEO:https://b.mp4]\n[VIDEO:https://c.mp4]".to_string(),
+        )];
+        let config = MultimodalConfig {
+            max_images: 4,
+            max_image_size_mb: 5,
+            allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
+        };
+        let error = prepare_messages_for_provider(&messages, &config)
+            .await
+            .expect_err("should reject video count overflow");
+        assert!(error.to_string().contains("multimodal video limit exceeded"));
+    }
+    #[tokio::test]
+    async fn prepare_messages_mixed_image_and_video() {
+        let temp = tempfile::tempdir().unwrap();
+        let image_path = temp.path().join("sample.png");
+        std::fs::write(
+            &image_path,
+            [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'],
+        )
+        .unwrap();
+        let messages = vec![ChatMessage::user(format!(
+            "Look [IMAGE:{}] and [VIDEO:https://example.com/v.mp4]",
+            image_path.display()
+        ))];
+        let config = MultimodalConfig {
+            max_images: 4,
+            max_image_size_mb: 5,
+            allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
+        };
+        let prepared = prepare_messages_for_provider(&messages, &config)
+            .await
+            .unwrap();
+        assert!(prepared.contains_images);
+        assert!(prepared.contains_videos);
+        assert_eq!(prepared.messages.len(), 1);
+        let content = &prepared.messages[0].content;
+        let (after_images, image_refs) = parse_image_markers(content);
+        assert_eq!(image_refs.len(), 1);
+        assert!(image_refs[0].starts_with("data:image/png;base64,"));
+        let (_, video_refs) = parse_video_markers(content);
+        assert_eq!(video_refs.len(), 1);
+        assert_eq!(video_refs[0], "https://example.com/v.mp4");
+        // cleaned text should contain "Look" somewhere
+        assert!(after_images.contains("Look") || content.contains("Look"));
+    }
+
+    #[tokio::test]
+    async fn integration_video_url_passthrough_pipeline() {
+        let messages = vec![
+            ChatMessage::user("Analyze [VIDEO:https://example.com/test.mp4]".to_string()),
+        ];
+
+        let prepared = prepare_messages_for_provider(&messages, &MultimodalConfig::default())
+            .await
+            .unwrap();
+
+        assert!(prepared.contains_videos);
+        assert!(!prepared.contains_images);
+        assert_eq!(prepared.messages.len(), 1);
+
+        let content = &prepared.messages[0].content;
+        assert!(content.contains("[VIDEO:https://example.com/test.mp4]"));
+
+        let (_, video_refs) = parse_video_markers(content);
+        assert_eq!(video_refs.len(), 1);
+        assert_eq!(video_refs[0], "https://example.com/test.mp4");
+
+        let (_, image_refs) = parse_image_markers(content);
+        assert!(image_refs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn integration_mixed_image_video_pipeline() {
+        let temp = tempfile::tempdir().unwrap();
+        let image_path = temp.path().join("test.png");
+        std::fs::write(
+            &image_path,
+            [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'],
+        )
+        .unwrap();
+
+        let messages = vec![ChatMessage::user(format!(
+            "See [IMAGE:{}] and [VIDEO:https://example.com/v.mp4]",
+            image_path.display()
+        ))];
+
+        let config = MultimodalConfig {
+            max_images: 4,
+            max_image_size_mb: 5,
+            allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
+        };
+
+        let prepared = prepare_messages_for_provider(&messages, &config)
+            .await
+            .unwrap();
+
+        assert!(prepared.contains_images);
+        assert!(prepared.contains_videos);
+        assert_eq!(prepared.messages.len(), 1);
+
+        let content = &prepared.messages[0].content;
+        let (_, image_refs) = parse_image_markers(content);
+        assert_eq!(image_refs.len(), 1);
+        assert!(image_refs[0].starts_with("data:image/png;base64,"));
+
+        let (_, video_refs) = parse_video_markers(content);
+        assert_eq!(video_refs.len(), 1);
+        assert_eq!(video_refs[0], "https://example.com/v.mp4");
+    }
+    #[tokio::test]
+    async fn integration_video_too_many_rejected() {
+        let messages = vec![ChatMessage::user(
+            "[VIDEO:https://a.mp4]\n[VIDEO:https://b.mp4]\n[VIDEO:https://c.mp4]".to_string(),
+        )];
+        let config = MultimodalConfig {
+            max_images: 4,
+            max_image_size_mb: 5,
+            allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
+        };
+        let error = prepare_messages_for_provider(&messages, &config)
+            .await
+            .expect_err("should reject video count overflow");
+        assert!(error.to_string().contains("multimodal video limit exceeded"));
+    }
+    #[tokio::test]
+    async fn regression_image_only_pipeline_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let image_path = temp.path().join("regress.png");
+        std::fs::write(
+            &image_path,
+            [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'],
+        )
+        .unwrap();
+        let messages = vec![ChatMessage::user(format!(
+            "Check [IMAGE:{}]",
+            image_path.display()
+        ))];
+        let config = MultimodalConfig {
+            max_images: 4,
+            max_image_size_mb: 5,
+            allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
+        };
+        let prepared = prepare_messages_for_provider(&messages, &config)
+            .await
+            .unwrap();
+        assert!(prepared.contains_images);
+        assert!(!prepared.contains_videos);
+        assert_eq!(prepared.messages.len(), 1);
+        let content = &prepared.messages[0].content;
+        let (_, image_refs) = parse_image_markers(content);
+        assert_eq!(image_refs.len(), 1);
+        assert!(image_refs[0].starts_with("data:image/png;base64,"));
+        let (_, video_refs) = parse_video_markers(content);
+        assert!(video_refs.is_empty());
     }
 }

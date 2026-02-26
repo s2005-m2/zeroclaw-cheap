@@ -173,6 +173,21 @@ Use `skills audit` to manually validate a candidate skill directory (or an insta
 
 Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injected into the agent system prompt at runtime, so the model can follow skill instructions without manually reading skill files.
 
+### MCP Tools
+
+MCP (Model Context Protocol) tools are dynamically injected from connected MCP servers. Enable via `[mcp]` in `config.toml` and configure servers in `.mcp.json`.
+
+| Tool | Description |
+|------|-------------|
+| `mcp_manage` | Add, remove, or list MCP servers at runtime. Actions: `add`, `remove`, `list`. Requires `autonomy.level = "full"` for `add`/`remove`. |
+| `mcp_{server}_{tool}` | Dynamically injected tools from connected MCP servers. Each tool is namespaced by server name to avoid collisions. |
+
+Notes:
+
+- MCP tools become available after startup when `[mcp].enabled = true` and `.mcp.json` contains server definitions.
+- Use `mcp_manage` with `action = "list"` to see active servers and their tool counts.
+- See [config-reference.md](config-reference.md#mcp) for `.mcp.json` format and configuration details.
+
 ### `migrate`
 
 - `zeroclaw migrate openclaw [--source <path>] [--dry-run]`
@@ -206,6 +221,15 @@ Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injec
 - `zeroclaw peripheral flash [--port <serial_port>]`
 - `zeroclaw peripheral setup-uno-q [--host <ip_or_host>]`
 - `zeroclaw peripheral flash-nucleo`
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `mcp_manage` | Add, remove, or list MCP servers at runtime. Actions: `add`, `remove`, `list` |
+| `mcp_{server}_{tool}` | Dynamically injected tools from connected MCP servers |
+
+MCP tools become available when `.mcp.json` is configured in the workspace. See [config-reference.md](config-reference.md#mcp-model-context-protocol) for setup details.
 
 ## Validation Tip
 

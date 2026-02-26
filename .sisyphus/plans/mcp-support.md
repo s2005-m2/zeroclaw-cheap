@@ -260,7 +260,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
     Evidence: .sisyphus/evidence/task-6-config.txt
   ```
   **Commit**: NO (groups with Wave 2)
-- [ ] 7. McpRegistry — server connection manager
+- [x] 7. McpRegistry — server connection manager
   **What to do**:
   - Create `src/mcp/registry.rs` with `McpRegistry` struct
   - `Arc<RwLock<HashMap<String, McpServerState>>>` where state = client + discovered tools
@@ -286,7 +286,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
     Evidence: .sisyphus/evidence/task-7-registry.txt
   ```
   **Commit**: YES — `feat(mcp): add McpRegistry server connection manager`
-- [ ] 8. McpBridgeTool — Tool trait wrapper for MCP tools
+- [x] 8. McpBridgeTool — Tool trait wrapper for MCP tools
 
   **What to do**:
   - Create `src/tools/mcp_bridge.rs` implementing `Tool` trait
@@ -338,7 +338,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
 
   **Commit**: NO (groups with Wave 3)
 
-- [ ] 9. McpManageTool — AI self-management tool
+- [x] 9. McpManageTool — AI self-management tool
 
   **What to do**:
   - Create `src/tools/mcp_manage.rs` implementing `Tool` trait
@@ -391,7 +391,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
   ```
 
   **Commit**: NO (groups with Wave 3)
-- [ ] 10. Agent mutable tool list — snapshot-and-swap
+- [x] 10. Agent mutable tool list — snapshot-and-swap
 
   **What to do**:
   - Modify `src/agent/agent.rs`: change `tools: Vec<Box<dyn Tool>>` to `tools: Arc<RwLock<Vec<Box<dyn Tool>>>>`
@@ -431,7 +431,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
     Evidence: .sisyphus/evidence/task-10-no-regression.txt
   ```
   **Commit**: YES — `feat(mcp): add mutable tool list with snapshot-and-swap`
-- [ ] 11. MCP resource/prompt injection into agent context
+- [x] 11. MCP resource/prompt injection into agent context
   **What to do**:
   - In agent loop, after MCP registry snapshot, call `list_resources()` and `list_prompts()` on each connected server
   - Inject resource descriptions as additional system context (append to system prompt or context window)
@@ -462,7 +462,7 @@ Wave FINAL: F1 compliance [oracle], F2 quality [unspecified-high], F3 QA [unspec
     Evidence: .sisyphus/evidence/task-11-context-injection.txt
   ```
   **Commit**: NO (groups with Wave 3)
-- [ ] 12. Wire MCP into Agent startup + channel loop
+- [x] 12. Wire MCP into Agent startup + channel loop
   **What to do**:
   - In `src/agent/agent.rs` `AgentBuilder::build()`: load `.mcp.json`, create `McpRegistry`, connect to configured servers
   - Pass `Arc<McpRegistry>` to `McpManageTool` and `McpBridgeTool` constructors
@@ -617,4 +617,4 @@ cargo test --test mcp_integration    # Integration tests pass
 - [ ] MCP tools appear in agent tool_specs when .mcp.json configured
 - [ ] Agent works normally when no .mcp.json exists
 - [ ] `mcp_manage add` blocked in Supervised mode
-- [ ] Documentation updated (config-reference, commands-reference, mcp-guide)
+- [x] Documentation updated (config-reference, commands-reference, mcp-guide)

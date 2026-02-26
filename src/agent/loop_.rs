@@ -2045,6 +2045,22 @@ pub(crate) async fn run_tool_call_loop(
             .into());
         }
 
+        // ── Video capability check (soft: warn + strip, not error) ──
+        let video_marker_count = multimodal::count_video_markers(history);
+        if video_marker_count > 0 && !provider.supports_video() {
+            tracing::warn!(
+                provider = provider_name,
+                video_markers = video_marker_count,
+                "provider does not support video input — stripping {video_marker_count} video marker(s)"
+            );
+            for msg in history.iter_mut() {
+                if msg.role == "user" {
+                    let (cleaned, _refs) = multimodal::parse_video_markers(&msg.content);
+                    msg.content = cleaned;
+                }
+            }
+        }
+
         let prepared_messages =
             multimodal::prepare_messages_for_provider(history, multimodal_config).await?;
 
@@ -2685,6 +2701,13 @@ pub async fn run(
         );
     }
 
+    // ── Load skills and create shared state for hot-reload ──────────
+    let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+    let shared_skills = Arc::new(tokio::sync::RwLock::new(crate::skills::SkillsState {
+        skills: skills.clone(),
+        dirty: false,
+    }));
+
     // ── Tools (including memory tools and peripherals) ────────────
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
@@ -2707,6 +2730,7 @@ pub async fn run(
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        Some(shared_skills.clone()),
     );
 
     let peripheral_tools: Vec<Box<dyn Tool>> =
@@ -2770,7 +2794,6 @@ pub async fn run(
         .collect();
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
-    let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
     let mut tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
@@ -2879,6 +2902,10 @@ pub async fn run(
             "Query connected hardware for reported GPIO pins and LED pin. Use when: user asks what pins are available.",
         ));
     }
+    tool_descs.push((
+        "skill_manage",
+        "Create, read, update, delete, and list agent skills at runtime. Use to extend your own capabilities.",
+    ));
     let bootstrap_max_chars = if config.agent.compact_context {
         Some(6000)
     } else {
@@ -3101,6 +3128,35 @@ pub async fn run(
             }
             observer.record_event(&ObserverEvent::TurnComplete);
 
+            // Hot-reload skills if dirty
+            {
+                let needs_reload = shared_skills.read().await.dirty;
+                if needs_reload {
+                    let mut state = shared_skills.write().await;
+                    crate::skills::reload_skills(&mut state, &config.workspace_dir, &config);
+                    // Rebuild system prompt with updated skills
+                    let mut new_prompt = crate::channels::build_system_prompt_with_mode(
+                        &config.workspace_dir,
+                        model_name,
+                        &tool_descs,
+                        &state.skills,
+                        Some(&config.identity),
+                        bootstrap_max_chars,
+                        native_tools,
+                        config.skills.prompt_injection_mode,
+                    );
+                    if !native_tools {
+                        new_prompt.push_str(&build_tool_instructions(&tools_registry));
+                    }
+                    // Update system message in history
+                    if !history.is_empty() {
+                        history[0] = ChatMessage::system(&new_prompt);
+                    }
+                    system_prompt = new_prompt;
+                    state.dirty = false;
+                }
+            }
+
             // Auto-compaction before hard trimming to preserve long-context signal.
             if let Ok(compacted) = auto_compact_history(
                 &mut history,
@@ -3171,6 +3227,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        None,  // shared_skills — not needed for single message mode
     );
     let peripheral_tools: Vec<Box<dyn Tool>> =
         crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
@@ -3260,6 +3317,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
             "Query connected hardware for reported GPIO pins and LED pin. Use when user asks what pins are available.",
         ));
     }
+    tool_descs.push(("skill_manage", "Create, read, update, delete, and list agent skills at runtime."));
     let bootstrap_max_chars = if config.agent.compact_context {
         Some(6000)
     } else {
@@ -3375,6 +3433,7 @@ mod tests {
             ProviderCapabilities {
                 native_tool_calling: false,
                 vision: true,
+                video: false,
             }
         }
 
@@ -3649,6 +3708,8 @@ mod tests {
             max_images: 4,
             max_image_size_mb: 1,
             allow_remote_fetch: false,
+            max_videos: 2,
+            max_video_size_mb: 20,
         };
 
         let err = run_tool_call_loop(

@@ -187,6 +187,8 @@ wa-rs-tokio-transport = { version = "0.2", optional = true, default-features = f
 
 # VPN proxy support — subconverter for Clash subscription parsing
 subconverter = { version = "0.2.34", optional = true, default-features = false }
+# File watcher for docs sync (Feishu bidirectional sync)
+notify = { version = "6", optional = true }
 
 # Raspberry Pi GPIO / Landlock (Linux only) — target-specific to avoid compile failure on macOS
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -228,6 +230,8 @@ local-transcription = ["dep:sherpa-rs", "dep:hound"]
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost"]
 # vpn = Embedded VPN proxy via external clash process + subconverter
 vpn = ["dep:subconverter"]
+# feishu-docs-sync = Bidirectional sync between local config files and Feishu Docs
+feishu-docs-sync = ["dep:notify"]
 
 [profile.release]
 opt-level = "z"      # Optimize for size

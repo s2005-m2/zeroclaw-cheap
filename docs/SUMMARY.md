@@ -48,6 +48,7 @@ Last refreshed: **February 18, 2026**.
 - [troubleshooting.md](troubleshooting.md)
 - [network-deployment.md](network-deployment.md)
 - [mattermost-setup.md](mattermost-setup.md)
+- [feishu-docs-sync-guide.md](feishu-docs-sync-guide.md)
 
 ### 4) Security Design & Proposals
 

@@ -1,4 +1,5 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
+use crate::config::StreamMode;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
@@ -14,6 +15,17 @@ const FEISHU_WS_BASE_URL: &str = "https://open.feishu.cn";
 const LARK_BASE_URL: &str = "https://open.larksuite.com/open-apis";
 const LARK_WS_BASE_URL: &str = "https://open.larksuite.com";
 const ACK_REACTION_EMOJI_TYPE: &str = "MUSCLE";
+const LARK_MAX_FILE_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
+const LARK_MAX_FILE_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
+
+/// Attachment types recognized in outgoing Lark messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LarkAttachmentKind {
+    Image,
+    Document,
+    Audio,
+    Video,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Feishu WebSocket long-connection: pbbp2.proto frame codec
@@ -198,6 +210,50 @@ fn ensure_lark_send_success(
     Ok(())
 }
 
+/// Platform selection for Lark (international) vs Feishu (China).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LarkPlatform {
+    Lark,
+    Feishu,
+}
+
+impl LarkPlatform {
+    fn api_base(self) -> &'static str {
+        match self {
+            Self::Lark => LARK_BASE_URL,
+            Self::Feishu => FEISHU_BASE_URL,
+        }
+    }
+
+    fn ws_base(self) -> &'static str {
+        match self {
+            Self::Lark => LARK_WS_BASE_URL,
+            Self::Feishu => FEISHU_WS_BASE_URL,
+        }
+    }
+
+    fn channel_name(self) -> &'static str {
+        match self {
+            Self::Lark => "lark",
+            Self::Feishu => "feishu",
+        }
+    }
+
+    fn proxy_service_key(self) -> &'static str {
+        match self {
+            Self::Lark => "lark",
+            Self::Feishu => "feishu",
+        }
+    }
+
+    fn locale_header(self) -> &'static str {
+        match self {
+            Self::Lark => "en_us",
+            Self::Feishu => "zh_cn",
+        }
+    }
+}
+
 /// Lark/Feishu channel.
 ///
 /// Supports two receive modes (configured via `receive_mode` in config):
@@ -218,6 +274,16 @@ pub struct LarkChannel {
     tenant_token: Arc<RwLock<Option<CachedTenantToken>>>,
     /// Dedup set: WS message_ids seen in last ~30 min to prevent double-dispatch
     ws_seen_ids: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Streaming mode for progressive draft updates via CardKit.
+    stream_mode: StreamMode,
+    /// Minimum interval (ms) between card updates.
+    draft_update_interval_ms: u64,
+    /// CardKit card sequence numbers per card_id.
+    card_sequence: Arc<std::sync::Mutex<HashMap<String, u64>>>,
+    /// Throttle tracking: last draft update time per card_id.
+    last_draft_update: Arc<std::sync::Mutex<HashMap<String, Instant>>>,
+    /// Typing indicator card IDs per recipient (for "正在处理..." cards).
+    typing_card_ids: Arc<std::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl LarkChannel {
@@ -256,6 +322,11 @@ impl LarkChannel {
             receive_mode: crate::config::schema::LarkReceiveMode::default(),
             tenant_token: Arc::new(RwLock::new(None)),
             ws_seen_ids: Arc::new(RwLock::new(HashMap::new())),
+            stream_mode: StreamMode::default(),
+            draft_update_interval_ms: 500,
+            card_sequence: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            last_draft_update: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            typing_card_ids: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -276,6 +347,8 @@ impl LarkChannel {
             platform,
         );
         ch.receive_mode = config.receive_mode.clone();
+        ch.stream_mode = config.stream_mode;
+        ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
 
@@ -290,6 +363,8 @@ impl LarkChannel {
             LarkPlatform::Lark,
         );
         ch.receive_mode = config.receive_mode.clone();
+        ch.stream_mode = config.stream_mode;
+        ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
 
@@ -304,7 +379,16 @@ impl LarkChannel {
             LarkPlatform::Feishu,
         );
         ch.receive_mode = config.receive_mode.clone();
+        ch.stream_mode = config.stream_mode;
+        ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
+    }
+
+    /// Configure streaming mode for progressive draft updates via CardKit.
+    pub fn with_streaming(mut self, stream_mode: StreamMode, draft_update_interval_ms: u64) -> Self {
+        self.stream_mode = stream_mode;
+        self.draft_update_interval_ms = draft_update_interval_ms;
+        self
     }
 
     fn http_client(&self) -> reqwest::Client {
@@ -335,9 +419,26 @@ impl LarkChannel {
         format!("{}/im/v1/images", self.api_base())
     }
 
+    fn upload_file_url(&self) -> String {
+        format!("{}/im/v1/files", self.api_base())
+    }
+
+    fn cardkit_url(&self) -> String {
+        format!("{}/cardkit/v1/card", self.api_base())
+    }
+
+
     fn download_image_url(&self, message_id: &str, image_key: &str) -> String {
         format!(
             "{}/im/v1/messages/{message_id}/resources/{image_key}?type=image",
+            self.api_base()
+        )
+    }
+
+    /// URL for downloading file/audio/media resources from a message.
+    fn download_file_url(&self, message_id: &str, file_key: &str, resource_type: &str) -> String {
+        format!(
+            "{}/im/v1/messages/{message_id}/resources/{file_key}?type={resource_type}",
             self.api_base()
         )
     }
@@ -686,6 +787,24 @@ impl LarkChannel {
                                 None => continue,
                             }
                         }
+                        "file" => match extract_file_key_and_name(&lark_msg.content) {
+                            Some((key, name)) => {
+                                let label = name.as_deref().unwrap_or(&key);
+                                format!("[DOCUMENT:lark_file_key:{key}:{label}]")
+                            }
+                            None => continue,
+                        },
+                        "audio" => match extract_file_key(&lark_msg.content) {
+                            Some(key) => format!("[AUDIO:lark_file_key:{key}]"),
+                            None => continue,
+                        },
+                        "media" => match extract_file_key_and_name(&lark_msg.content) {
+                            Some((key, name)) => {
+                                let label = name.as_deref().unwrap_or(&key);
+                                format!("[VIDEO:lark_file_key:{key}:{label}]")
+                            }
+                            None => continue,
+                        },
                         _ => continue,
                     };
 
@@ -844,6 +963,38 @@ impl LarkChannel {
         }
         Ok(resp.bytes().await?.to_vec())
     }
+    /// Download a file/audio/media resource from a received message.
+    ///
+    /// `resource_type` should be `"image"` for images, `"file"` for file/audio/video.
+    /// Rejects responses exceeding `LARK_MAX_FILE_DOWNLOAD_BYTES`.
+    async fn download_file(
+        &self,
+        message_id: &str,
+        file_key: &str,
+        resource_type: &str,
+    ) -> anyhow::Result<Vec<u8>> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.download_file_url(message_id, file_key, resource_type);
+        let resp = self
+            .http_client()
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            anyhow::bail!("Lark download_file failed: status={status}");
+        }
+        let bytes = resp.bytes().await?.to_vec();
+        if bytes.len() > LARK_MAX_FILE_DOWNLOAD_BYTES {
+            anyhow::bail!(
+                "Lark: downloaded file exceeds max size ({} bytes > {} MB)",
+                bytes.len(),
+                LARK_MAX_FILE_DOWNLOAD_BYTES / (1024 * 1024)
+            );
+        }
+        Ok(bytes)
+    }
     /// Send an image message by image_key.
     async fn send_image_msg(&self, chat_id: &str, image_key: &str) -> anyhow::Result<()> {
         let token = self.get_tenant_access_token().await?;
@@ -888,6 +1039,151 @@ impl LarkChannel {
         };
         let image_key = self.upload_image(bytes, &filename).await?;
         self.send_image_msg(chat_id, &image_key).await
+    }
+    /// Upload a file to Lark and return the `file_key`.
+    async fn upload_file(
+        &self,
+        file_bytes: Vec<u8>,
+        filename: &str,
+        file_type: &str,
+    ) -> anyhow::Result<String> {
+        if file_bytes.len() > LARK_MAX_FILE_UPLOAD_BYTES {
+            anyhow::bail!(
+                "Lark: file exceeds max upload size ({} bytes > {LARK_MAX_FILE_UPLOAD_BYTES})",
+                file_bytes.len()
+            );
+        }
+        let token = self.get_tenant_access_token().await?;
+        let url = self.upload_file_url();
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")?;
+        let form = reqwest::multipart::Form::new()
+            .text("file_type", file_type.to_string())
+            .text("file_name", filename.to_string())
+            .part("file", part);
+        let resp = self
+            .http_client()
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .multipart(form)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            anyhow::bail!("Lark upload_file failed: status={status}, body={body}");
+        }
+        let code = extract_lark_response_code(&body).unwrap_or(-1);
+        if code != 0 {
+            anyhow::bail!("Lark upload_file failed: code={code}, body={body}");
+        }
+        body.pointer("/data/file_key")
+            .and_then(|k| k.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Lark upload_file: missing file_key in response"))
+    }
+    /// Send a file message by file_key.
+    async fn send_file_msg(&self, chat_id: &str, file_key: &str) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.send_message_url();
+        let content = serde_json::json!({ "file_key": file_key }).to_string();
+        let body = serde_json::json!({
+            "receive_id": chat_id,
+            "msg_type": "file",
+            "content": content,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "file after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &response, "file")?;
+        Ok(())
+    }
+    /// Send an audio message by file_key.
+    async fn send_audio_msg(&self, chat_id: &str, file_key: &str) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.send_message_url();
+        let content = serde_json::json!({ "file_key": file_key }).to_string();
+        let body = serde_json::json!({
+            "receive_id": chat_id,
+            "msg_type": "audio",
+            "content": content,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "audio after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &response, "audio")?;
+        Ok(())
+    }
+    /// Send a media (video) message by file_key.
+    async fn send_media_msg(&self, chat_id: &str, file_key: &str) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.send_message_url();
+        let content = serde_json::json!({ "file_key": file_key }).to_string();
+        let body = serde_json::json!({
+            "receive_id": chat_id,
+            "msg_type": "media",
+            "content": content,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "media after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &response, "media")?;
+        Ok(())
+    }
+    /// Upload a local file or download a URL, then send as the appropriate message type.
+    async fn send_lark_attachment(
+        &self,
+        chat_id: &str,
+        attachment: &LarkAttachment,
+    ) -> anyhow::Result<()> {
+        let target = attachment.target.trim();
+        let (bytes, filename) = if target.starts_with("http://") || target.starts_with("https://") {
+            let resp = self.http_client().get(target).send().await?;
+            if !resp.status().is_success() {
+                anyhow::bail!("Lark: failed to fetch attachment URL: {target}");
+            }
+            let name = target.rsplit('/').next().unwrap_or("file").to_string();
+            (resp.bytes().await?.to_vec(), name)
+        } else {
+            let path = std::path::Path::new(target);
+            if !path.exists() {
+                anyhow::bail!("Lark: attachment file not found: {target}");
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            (tokio::fs::read(path).await?, name)
+        };
+        let ext = std::path::Path::new(&filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let file_type = resolve_feishu_file_type(ext);
+        let file_key = self.upload_file(bytes, &filename, file_type).await?;
+        match attachment.kind {
+            LarkAttachmentKind::Image => self.send_image_msg(chat_id, &file_key).await,
+            LarkAttachmentKind::Document => self.send_file_msg(chat_id, &file_key).await,
+            LarkAttachmentKind::Audio => self.send_audio_msg(chat_id, &file_key).await,
+            LarkAttachmentKind::Video => self.send_media_msg(chat_id, &file_key).await,
+        }
     }
     async fn send_text_once(
         &self,
@@ -980,6 +1276,24 @@ impl LarkChannel {
                 Some(key) => format!("[IMAGE:lark_image_key:{key}]"),
                 None => return messages,
             },
+            "file" => match extract_file_key_and_name(content_str) {
+                Some((key, name)) => {
+                    let label = name.as_deref().unwrap_or(&key);
+                    format!("[DOCUMENT:lark_file_key:{key}:{label}]")
+                }
+                None => return messages,
+            },
+            "audio" => match extract_file_key(content_str) {
+                Some(key) => format!("[AUDIO:lark_file_key:{key}]"),
+                None => return messages,
+            },
+            "media" => match extract_file_key_and_name(content_str) {
+                Some((key, name)) => {
+                    let label = name.as_deref().unwrap_or(&key);
+                    format!("[VIDEO:lark_file_key:{key}:{label}]")
+                }
+                None => return messages,
+            },
             _ => return messages,
         };
 
@@ -1032,6 +1346,176 @@ impl LarkChannel {
 
         messages
     }
+
+    // ── CardKit streaming helpers ──────────────────────────────────────────
+
+    /// Create a new CardKit card entity and return its `card_id`.
+    async fn create_card(&self, content_json: &str) -> anyhow::Result<String> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.cardkit_url();
+        let body = serde_json::json!({
+            "type": "card_json",
+            "data": content_json,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "create_card after token refresh")?;
+            return rr
+                .pointer("/data/card_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("Lark create_card: missing card_id in response"));
+        }
+        ensure_lark_send_success(status, &response, "create_card")?;
+        response
+            .pointer("/data/card_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Lark create_card: missing card_id in response"))
+    }
+    /// Update an existing CardKit card entity with new content.
+    async fn update_card(&self, card_id: &str, content_json: &str, sequence: u64) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = format!("{}/{card_id}", self.cardkit_url());
+        let body = serde_json::json!({
+            "type": "card_json",
+            "data": content_json,
+            "sequence": sequence,
+        });
+        let resp = self
+            .http_client()
+            .put(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let raw = resp.text().await.unwrap_or_default();
+        let parsed = serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": raw }));
+        if should_refresh_lark_tenant_token(status, &parsed) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let resp2 = self
+                .http_client()
+                .put(&url)
+                .header("Authorization", format!("Bearer {new_token}"))
+                .header("Content-Type", "application/json; charset=utf-8")
+                .json(&body)
+                .send()
+                .await?;
+            let rs = resp2.status();
+            let rr: serde_json::Value = resp2.json().await.unwrap_or_default();
+            ensure_lark_send_success(rs, &rr, "update_card after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &parsed, "update_card")?;
+        Ok(())
+    }
+    /// Send a card message referencing an existing CardKit card_id. Returns message_id.
+    async fn send_card_message(&self, recipient: &str, card_id: &str) -> anyhow::Result<String> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.send_message_url();
+        let content = serde_json::json!({
+            "type": "card",
+            "data": {
+                "card_id": card_id
+            }
+        })
+        .to_string();
+        let body = serde_json::json!({
+            "receive_id": recipient,
+            "msg_type": "interactive",
+            "content": content,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "send_card_message after token refresh")?;
+            return rr
+                .pointer("/data/message_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("Lark send_card_message: missing message_id"));
+        }
+        ensure_lark_send_success(status, &response, "send_card_message")?;
+        response
+            .pointer("/data/message_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Lark send_card_message: missing message_id"))
+    }
+
+    // ── Typing indicator helpers ───────────────────────────────────────────
+
+    /// Show a "正在处理..." CardKit card as a typing indicator.
+    /// Graceful no-op when CardKit is unavailable.
+    pub async fn start_typing(&self, recipient: &str) -> anyhow::Result<()> {
+        let card_json = serde_json::json!({
+            "schema": "2.0",
+            "body": {
+                "elements": [{
+                    "tag": "markdown",
+                    "content": "⏳ 正在处理..."
+                }]
+            }
+        })
+        .to_string();
+
+        let card_id = match self.create_card(&card_json).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!("[{}] start_typing: CardKit unavailable, skipping: {e}", self.channel_name());
+                return Ok(());
+            }
+        };
+
+        if let Err(e) = self.send_card_message(recipient, &card_id).await {
+            tracing::warn!("[{}] start_typing: failed to send typing card: {e}", self.channel_name());
+            return Ok(());
+        }
+
+        self.typing_card_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(recipient.to_string(), card_id);
+
+        Ok(())
+    }
+
+    /// Remove the typing indicator card for a recipient.
+    /// Graceful no-op when no typing card exists or CardKit is unavailable.
+    pub async fn stop_typing(&self, recipient: &str) -> anyhow::Result<()> {
+        let card_id = self
+            .typing_card_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(recipient);
+
+        if let Some(card_id) = card_id {
+            // Update the card to a blank state so the indicator disappears.
+            let empty_json = serde_json::json!({
+                "schema": "2.0",
+                "body": { "elements": [] }
+            })
+            .to_string();
+
+            if let Err(e) = self.update_card(&card_id, &empty_json, 2).await {
+                tracing::warn!(
+                    "[{}] stop_typing: failed to clear typing card {card_id}: {e}",
+                    self.channel_name()
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1041,10 +1525,20 @@ impl Channel for LarkChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let (text, images) = parse_lark_image_markers(&message.content);
-        for target in &images {
-            if let Err(e) = self.send_lark_image(&message.recipient, target).await {
-                tracing::warn!("Lark: image send failed for {target}: {e}");
+        let (text, attachments) = parse_lark_attachment_markers(&message.content);
+        for att in &attachments {
+            let result = match att.kind {
+                LarkAttachmentKind::Image => {
+                    self.send_lark_image(&message.recipient, &att.target).await
+                }
+                _ => self.send_lark_attachment(&message.recipient, att).await,
+            };
+            if let Err(e) = result {
+                tracing::warn!(
+                    "Lark: {:?} send failed for {}: {e}",
+                    att.kind,
+                    att.target
+                );
             }
         }
         if text.is_empty() {
@@ -1089,6 +1583,147 @@ impl Channel for LarkChannel {
 
     async fn health_check(&self) -> bool {
         self.get_tenant_access_token().await.is_ok()
+    }
+    fn supports_draft_updates(&self) -> bool {
+        self.stream_mode != StreamMode::Off
+    }
+
+    async fn send_draft(&self, message: &SendMessage) -> anyhow::Result<Option<String>> {
+        if self.stream_mode == StreamMode::Off {
+            return Ok(None);
+        }
+
+        let initial_text = if message.content.is_empty() {
+            "...".to_string()
+        } else {
+            message.content.clone()
+        };
+
+        let card_json = serde_json::json!({
+            "schema": "2.0",
+            "body": {
+                "elements": [{
+                    "tag": "markdown",
+                    "content": initial_text
+                }]
+            }
+        })
+        .to_string();
+
+        let card_id = match self.create_card(&card_json).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!("Lark CardKit create_card failed, falling back to send(): {e}");
+                return Ok(None);
+            }
+        };
+
+        match self.send_card_message(&message.recipient, &card_id).await {
+            Ok(_msg_id) => {
+                self.card_sequence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(card_id.clone(), 1);
+                self.last_draft_update
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(card_id.clone(), Instant::now());
+                Ok(Some(card_id))
+            }
+            Err(e) => {
+                tracing::warn!("Lark CardKit send_card_message failed: {e}");
+                Ok(None)
+            }
+        }
+    }
+    async fn update_draft(
+        &self,
+        _recipient: &str,
+        draft_id: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        // Throttle: skip update if too soon since last one
+        {
+            let last_updates = self.last_draft_update.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(last_time) = last_updates.get(draft_id) {
+                let elapsed = u64::try_from(last_time.elapsed().as_millis()).unwrap_or(u64::MAX);
+                if elapsed < self.draft_update_interval_ms.max(500) {
+                    return Ok(());
+                }
+            }
+        }
+        let sequence = {
+            let mut seqs = self.card_sequence.lock().unwrap_or_else(|e| e.into_inner());
+            let seq = seqs.entry(draft_id.to_string()).or_insert(1);
+            *seq += 1;
+            *seq
+        };
+        let card_json = serde_json::json!({
+            "schema": "2.0",
+            "body": {
+                "elements": [{
+                    "tag": "markdown",
+                    "content": text
+                }]
+            }
+        })
+        .to_string();
+        if let Err(e) = self.update_card(draft_id, &card_json, sequence).await {
+            tracing::warn!("Lark CardKit update_card failed (non-fatal): {e}");
+        } else {
+            self.last_draft_update
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(draft_id.to_string(), Instant::now());
+        }
+        Ok(())
+    }
+    async fn finalize_draft(
+        &self,
+        _recipient: &str,
+        draft_id: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        let sequence = {
+            let mut seqs = self.card_sequence.lock().unwrap_or_else(|e| e.into_inner());
+            let seq = seqs.entry(draft_id.to_string()).or_insert(1);
+            *seq += 1;
+            *seq
+        };
+        let card_json = serde_json::json!({
+            "schema": "2.0",
+            "body": {
+                "elements": [{
+                    "tag": "markdown",
+                    "content": text
+                }]
+            }
+        })
+        .to_string();
+        if let Err(e) = self.update_card(draft_id, &card_json, sequence).await {
+            tracing::warn!("Lark CardKit finalize_draft failed: {e}");
+        }
+        // Clean up tracking state
+        self.card_sequence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(draft_id);
+        self.last_draft_update
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(draft_id);
+        Ok(())
+    }
+    async fn cancel_draft(&self, _recipient: &str, draft_id: &str) -> anyhow::Result<()> {
+        self.card_sequence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(draft_id);
+        self.last_draft_update
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(draft_id);
+        Ok(())
     }
 }
 
@@ -1294,6 +1929,28 @@ fn extract_image_key(content: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// Extract `file_key` from a Lark file/audio message content JSON.
+fn extract_file_key(content: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .get("file_key")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Extract `file_key` and optional `file_name` from a Lark file/media message content JSON.
+fn extract_file_key_and_name(content: &str) -> Option<(String, Option<String>)> {
+    let v = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let key = v.get("file_key")?.as_str().filter(|s| !s.is_empty())?.to_string();
+    let name = v
+        .get("file_name")
+        .and_then(|n| n.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    Some((key, name))
+}
+
 /// Remove `@_user_N` placeholder tokens injected by Feishu in group chats.
 fn strip_at_placeholders(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
@@ -1332,11 +1989,31 @@ fn should_respond_in_group(mentions: &[serde_json::Value]) -> bool {
     })
 }
 
-/// Extract `[IMAGE:<target>]` markers from outgoing message content.
-/// Returns (cleaned_text, image_targets).
-fn parse_lark_image_markers(message: &str) -> (String, Vec<String>) {
+/// Map file extension to Feishu upload `file_type` parameter.
+fn resolve_feishu_file_type(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "pdf" => "pdf",
+        "doc" | "docx" => "doc",
+        "xls" | "xlsx" => "xls",
+        "ppt" | "pptx" => "ppt",
+        "opus" | "ogg" => "opus",
+        "mp4" => "mp4",
+        _ => "stream",
+    }
+}
+
+/// A parsed attachment marker from outgoing message content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LarkAttachment {
+    kind: LarkAttachmentKind,
+    target: String,
+}
+
+/// Extract attachment markers (`[IMAGE:…]`, `[DOCUMENT:…]`, `[AUDIO:…]`, `[VIDEO:…]`) from
+/// outgoing message content. Returns (cleaned_text, attachments).
+fn parse_lark_attachment_markers(message: &str) -> (String, Vec<LarkAttachment>) {
     let mut cleaned = String::with_capacity(message.len());
-    let mut images = Vec::new();
+    let mut attachments = Vec::new();
     let mut cursor = 0;
     while cursor < message.len() {
         let Some(open_rel) = message[cursor..].find('[') else {
@@ -1351,18 +2028,41 @@ fn parse_lark_image_markers(message: &str) -> (String, Vec<String>) {
         };
         let close = open + close_rel;
         let marker = &message[open + 1..close];
-        if let Some((kind, target)) = marker.split_once(':') {
+        if let Some((kind_str, target)) = marker.split_once(':') {
             let target = target.trim();
-            if kind.trim().eq_ignore_ascii_case("IMAGE") && !target.is_empty() {
-                images.push(target.to_string());
-                cursor = close + 1;
-                continue;
+            let kind = match kind_str.trim().to_ascii_uppercase().as_str() {
+                "IMAGE" => Some(LarkAttachmentKind::Image),
+                "DOCUMENT" => Some(LarkAttachmentKind::Document),
+                "AUDIO" => Some(LarkAttachmentKind::Audio),
+                "VIDEO" => Some(LarkAttachmentKind::Video),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                if !target.is_empty() {
+                    attachments.push(LarkAttachment {
+                        kind,
+                        target: target.to_string(),
+                    });
+                    cursor = close + 1;
+                    continue;
+                }
             }
         }
         cleaned.push_str(&message[open..=close]);
         cursor = close + 1;
     }
-    (cleaned.trim().to_string(), images)
+    (cleaned.trim().to_string(), attachments)
+}
+
+/// Legacy wrapper: extract only `[IMAGE:…]` markers (used by existing tests).
+fn parse_lark_image_markers(message: &str) -> (String, Vec<String>) {
+    let (text, attachments) = parse_lark_attachment_markers(message);
+    let images = attachments
+        .into_iter()
+        .filter(|a| a.kind == LarkAttachmentKind::Image)
+        .map(|a| a.target)
+        .collect();
+    (text, images)
 }
 
 #[cfg(test)]
@@ -1928,5 +2628,300 @@ mod tests {
     fn extract_image_key_missing() {
         assert_eq!(extract_image_key("{}"), None);
         assert_eq!(extract_image_key("not json"), None);
+    }
+    #[test]
+    fn parse_lark_attachment_markers_all_types() {
+        let msg = "Hello [IMAGE:/tmp/a.png] world [DOCUMENT:/tmp/b.pdf] foo [AUDIO:/tmp/c.opus] bar [VIDEO:/tmp/d.mp4]";
+        let (cleaned, attachments) = parse_lark_attachment_markers(msg);
+        assert_eq!(cleaned, "Hello  world  foo  bar");
+        assert_eq!(attachments.len(), 4);
+        assert_eq!(attachments[0].kind, LarkAttachmentKind::Image);
+        assert_eq!(attachments[0].target, "/tmp/a.png");
+        assert_eq!(attachments[1].kind, LarkAttachmentKind::Document);
+        assert_eq!(attachments[1].target, "/tmp/b.pdf");
+        assert_eq!(attachments[2].kind, LarkAttachmentKind::Audio);
+        assert_eq!(attachments[2].target, "/tmp/c.opus");
+        assert_eq!(attachments[3].kind, LarkAttachmentKind::Video);
+        assert_eq!(attachments[3].target, "/tmp/d.mp4");
+    }
+    #[test]
+    fn parse_lark_attachment_markers_case_insensitive() {
+        let msg = "[document:/tmp/a.pdf] [Audio:/tmp/b.ogg] [VIDEO:/tmp/c.mp4]";
+        let (cleaned, attachments) = parse_lark_attachment_markers(msg);
+        assert!(cleaned.is_empty());
+        assert_eq!(attachments.len(), 3);
+        assert_eq!(attachments[0].kind, LarkAttachmentKind::Document);
+        assert_eq!(attachments[1].kind, LarkAttachmentKind::Audio);
+        assert_eq!(attachments[2].kind, LarkAttachmentKind::Video);
+    }
+    #[test]
+    fn parse_lark_attachment_markers_unknown_kind_preserved() {
+        let msg = "text [UNKNOWN:/tmp/x] more";
+        let (cleaned, attachments) = parse_lark_attachment_markers(msg);
+        assert_eq!(cleaned, "text [UNKNOWN:/tmp/x] more");
+        assert!(attachments.is_empty());
+    }
+    #[test]
+    fn resolve_feishu_file_type_known_extensions() {
+        assert_eq!(resolve_feishu_file_type("pdf"), "pdf");
+        assert_eq!(resolve_feishu_file_type("doc"), "doc");
+        assert_eq!(resolve_feishu_file_type("docx"), "doc");
+        assert_eq!(resolve_feishu_file_type("xls"), "xls");
+        assert_eq!(resolve_feishu_file_type("xlsx"), "xls");
+        assert_eq!(resolve_feishu_file_type("ppt"), "ppt");
+        assert_eq!(resolve_feishu_file_type("pptx"), "ppt");
+        assert_eq!(resolve_feishu_file_type("opus"), "opus");
+        assert_eq!(resolve_feishu_file_type("ogg"), "opus");
+        assert_eq!(resolve_feishu_file_type("mp4"), "mp4");
+    }
+    #[test]
+    fn resolve_feishu_file_type_unknown_falls_back_to_stream() {
+        assert_eq!(resolve_feishu_file_type("zip"), "stream");
+        assert_eq!(resolve_feishu_file_type("txt"), "stream");
+        assert_eq!(resolve_feishu_file_type("png"), "stream");
+        assert_eq!(resolve_feishu_file_type(""), "stream");
+    }
+    #[test]
+    fn resolve_feishu_file_type_case_insensitive() {
+        assert_eq!(resolve_feishu_file_type("PDF"), "pdf");
+        assert_eq!(resolve_feishu_file_type("DOCX"), "doc");
+        assert_eq!(resolve_feishu_file_type("Mp4"), "mp4");
+    }
+    #[test]
+    fn lark_upload_file_url_matches_region() {
+        let ch_lark = make_channel();
+        assert_eq!(
+            ch_lark.upload_file_url(),
+            "https://open.larksuite.com/open-apis/im/v1/files"
+        );
+
+        let feishu_cfg = crate::config::schema::FeishuConfig {
+            app_id: "cli_app123".into(),
+            app_secret: "secret456".into(),
+            encrypt_key: None,
+            verification_token: Some("vtoken789".into()),
+            allowed_users: vec!["*".into()],
+            receive_mode: crate::config::schema::LarkReceiveMode::Webhook,
+            port: Some(9898),
+        };
+        let ch_feishu = LarkChannel::from_feishu_config(&feishu_cfg);
+        assert_eq!(
+            ch_feishu.upload_file_url(),
+            "https://open.feishu.cn/open-apis/im/v1/files"
+        );
+    }
+    #[test]
+    fn extract_file_key_valid() {
+        assert_eq!(
+            extract_file_key(r#"{"file_key":"file_v3_abc"}"#),
+            Some("file_v3_abc".to_string())
+        );
+    }
+    #[test]
+    fn extract_file_key_missing() {
+        assert_eq!(extract_file_key("{}"), None);
+        assert_eq!(extract_file_key("not json"), None);
+    }
+    #[test]
+    fn extract_file_key_and_name_with_name() {
+        let content = r#"{"file_key":"file_v3_abc","file_name":"report.pdf"}"#;
+        let result = extract_file_key_and_name(content);
+        assert_eq!(result, Some(("file_v3_abc".to_string(), Some("report.pdf".to_string()))));
+    }
+    #[test]
+    fn extract_file_key_and_name_without_name() {
+        let content = r#"{"file_key":"file_v3_abc"}"#;
+        let result = extract_file_key_and_name(content);
+        assert_eq!(result, Some(("file_v3_abc".to_string(), None)));
+    }
+    #[test]
+    fn extract_file_key_and_name_missing_key() {
+        assert_eq!(extract_file_key_and_name("{}"), None);
+    }
+    #[test]
+    fn parse_event_payload_file_message() {
+        let ch = make_channel();
+        let payload = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev1" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_user" } },
+                "message": {
+                    "message_type": "file",
+                    "content": "{\"file_key\":\"file_v3_abc\",\"file_name\":\"report.pdf\"}",
+                    "chat_id": "oc_chat1",
+                    "chat_type": "p2p",
+                    "message_id": "om_msg1",
+                    "create_time": "1000"
+                }
+            }
+        });
+        let msgs = ch.parse_event_payload(&payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "[DOCUMENT:lark_file_key:file_v3_abc:report.pdf]");
+    }
+    #[test]
+    fn parse_event_payload_audio_message() {
+        let ch = make_channel();
+        let payload = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev2" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_user" } },
+                "message": {
+                    "message_type": "audio",
+                    "content": "{\"file_key\":\"file_v3_audio\"}",
+                    "chat_id": "oc_chat1",
+                    "chat_type": "p2p",
+                    "message_id": "om_msg2",
+                    "create_time": "2000"
+                }
+            }
+        });
+        let msgs = ch.parse_event_payload(&payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "[AUDIO:lark_file_key:file_v3_audio]");
+    }
+    #[test]
+    fn parse_event_payload_media_message() {
+        let ch = make_channel();
+        let payload = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev3" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_user" } },
+                "message": {
+                    "message_type": "media",
+                    "content": "{\"file_key\":\"file_v3_video\",\"file_name\":\"clip.mp4\"}",
+                    "chat_id": "oc_chat1",
+                    "chat_type": "p2p",
+                    "message_id": "om_msg3",
+                    "create_time": "3000"
+                }
+            }
+        });
+        let msgs = ch.parse_event_payload(&payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "[VIDEO:lark_file_key:file_v3_video:clip.mp4]");
+    }
+    #[test]
+    fn parse_event_payload_file_message_no_name() {
+        let ch = make_channel();
+        let payload = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev4" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_user" } },
+                "message": {
+                    "message_type": "file",
+                    "content": "{\"file_key\":\"file_v3_noname\"}",
+                    "chat_id": "oc_chat1",
+                    "chat_type": "p2p",
+                    "message_id": "om_msg4",
+                    "create_time": "4000"
+                }
+            }
+        });
+        let msgs = ch.parse_event_payload(&payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "[DOCUMENT:lark_file_key:file_v3_noname:file_v3_noname]");
+    }
+    #[test]
+    fn lark_download_file_url_matches_region() {
+        let ch = make_channel();
+        assert_eq!(
+            ch.download_file_url("om_msg", "file_key_abc", "file"),
+            "https://open.larksuite.com/open-apis/im/v1/messages/om_msg/resources/file_key_abc?type=file"
+        );
+    }
+    #[test]
+    fn cardkit_url_lark_platform() {
+        let ch = make_channel();
+        assert_eq!(
+            ch.cardkit_url(),
+            "https://open.larksuite.com/open-apis/cardkit/v1/card"
+        );
+    }
+    #[test]
+    fn cardkit_url_feishu_platform() {
+        let ch = LarkChannel::new_with_platform(
+            "cli_test_app_id".into(),
+            "test_app_secret".into(),
+            "test_verification_token".into(),
+            None,
+            vec![],
+            LarkPlatform::Feishu,
+        );
+        assert_eq!(
+            ch.cardkit_url(),
+            "https://open.feishu.cn/open-apis/cardkit/v1/card"
+        );
+    }
+    #[test]
+    fn card_sequence_increments_per_card_id() {
+        let ch = make_channel();
+        // Initialize two cards
+        ch.card_sequence
+            .lock()
+            .unwrap()
+            .insert("card_a".to_string(), 1);
+        ch.card_sequence
+            .lock()
+            .unwrap()
+            .insert("card_b".to_string(), 5);
+        // Increment card_a
+        {
+            let mut seqs = ch.card_sequence.lock().unwrap();
+            let seq = seqs.entry("card_a".to_string()).or_insert(1);
+            *seq += 1;
+            assert_eq!(*seq, 2);
+        }
+        // Increment card_b
+        {
+            let mut seqs = ch.card_sequence.lock().unwrap();
+            let seq = seqs.entry("card_b".to_string()).or_insert(1);
+            *seq += 1;
+            assert_eq!(*seq, 6);
+        }
+        // card_a should still be 2
+        assert_eq!(*ch.card_sequence.lock().unwrap().get("card_a").unwrap(), 2);
+    }
+    #[test]
+    fn throttle_enforcement_respects_interval() {
+        let ch = make_channel()
+            .with_streaming(StreamMode::Partial, 500);
+        // Insert a recent timestamp
+        ch.last_draft_update
+            .lock()
+            .unwrap()
+            .insert("card_x".to_string(), Instant::now());
+        // Should be throttled (elapsed < 500ms)
+        let last_updates = ch.last_draft_update.lock().unwrap();
+        let last_time = last_updates.get("card_x").unwrap();
+        let elapsed = u64::try_from(last_time.elapsed().as_millis()).unwrap_or(u64::MAX);
+        assert!(elapsed < 500, "should be within throttle window");
+    }
+    #[test]
+    fn supports_draft_updates_respects_stream_mode() {
+        let ch_off = make_channel();
+        assert!(!ch_off.supports_draft_updates());
+        let ch_on = make_channel()
+            .with_streaming(StreamMode::Partial, 500);
+        assert!(ch_on.supports_draft_updates());
+    }
+    #[test]
+    fn typing_card_ids_lifecycle() {
+        let ch = make_channel();
+        // Initially empty
+        assert!(ch.typing_card_ids.lock().unwrap().is_empty());
+        // Simulate start_typing storing a card_id
+        ch.typing_card_ids
+            .lock()
+            .unwrap()
+            .insert("oc_chat_abc".to_string(), "card_typing_1".to_string());
+        assert_eq!(
+            ch.typing_card_ids.lock().unwrap().get("oc_chat_abc").unwrap(),
+            "card_typing_1"
+        );
+        // Simulate stop_typing removing the entry
+        let removed = ch.typing_card_ids.lock().unwrap().remove("oc_chat_abc");
+        assert_eq!(removed, Some("card_typing_1".to_string()));
+        assert!(ch.typing_card_ids.lock().unwrap().is_empty());
     }
 }

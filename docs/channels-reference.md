@@ -313,6 +313,8 @@ verification_token = ""             # optional
 allowed_users = ["*"]
 receive_mode = "websocket"          # or "webhook"
 port = 8081                          # required for webhook mode
+stream_mode = "off"                 # optional: off | partial (CardKit streaming)
+draft_update_interval_ms = 1000     # optional: CardKit card update throttle (ms)
 ```
 
 ### 4.12 Feishu
@@ -326,12 +328,43 @@ verification_token = ""             # optional
 allowed_users = ["*"]
 receive_mode = "websocket"          # or "webhook"
 port = 8081                          # required for webhook mode
+stream_mode = "off"                 # optional: off | partial (CardKit streaming)
+draft_update_interval_ms = 1000     # optional: CardKit card update throttle (ms)
 ```
 
 Migration note:
 
 - Legacy config `[channels_config.lark] use_feishu = true` is still supported for backward compatibility.
 - Prefer `[channels_config.feishu]` for new setups.
+
+Lark/Feishu capabilities:
+
+**File sending.** When the assistant response contains attachment markers, ZeroClaw uploads and sends them as native Lark file messages. Supported markers:
+
+- `[DOCUMENT:/path/to/file.pdf]`
+- `[AUDIO:/path/to/audio.opus]`
+- `[VIDEO:/path/to/video.mp4]`
+- `[IMAGE:/path/to/image.png]`
+
+Paths can be local files or HTTPS URLs. Maximum upload size is 20 MB per file.
+
+**File receiving.** Incoming file, audio, and video messages from Lark are converted to inline markers before reaching the agent:
+
+- `[DOCUMENT:lark_file_key:<key>:<filename>]`
+- `[AUDIO:lark_file_key:<key>]`
+- `[VIDEO:lark_file_key:<key>:<filename>]`
+
+The agent can reference these keys for downstream processing. Maximum download size is 20 MB per file.
+
+**CardKit streaming.** When `stream_mode = "partial"`, LLM responses are delivered progressively through Lark CardKit card entities instead of repeated message edits. This produces smoother output for long responses and avoids message-edit rate limits.
+
+- `stream_mode = "off"` (default): send the complete response as a single message.
+- `stream_mode = "partial"`: create a CardKit card and update it at each flush interval.
+- `draft_update_interval_ms` (default: 1000): minimum milliseconds between card updates. Lower values feel more responsive but increase API calls.
+
+**Typing indicator.** When CardKit is available, ZeroClaw shows a "正在处理..." card while the agent is processing. The card is automatically removed once the response is ready. If CardKit is unavailable, the typing indicator is silently skipped.
+
+**Cron delivery.** `"lark"` and `"feishu"` are supported as cron delivery channels. Scheduled tasks configured via `zeroclaw cron` can deliver messages directly to Lark or Feishu chats.
 
 ### 4.13 Nostr
 

@@ -82,13 +82,15 @@ mod skills;
 mod tools;
 mod tunnel;
 mod util;
+#[cfg(feature = "vpn")]
+mod vpn;
 
 use config::Config;
 
 // Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
 pub use zeroclaw::{
-    ChannelCommands, CronCommands, HardwareCommands, IntegrationCommands, MigrateCommands,
-    PeripheralCommands, ServiceCommands, SkillCommands,
+    ChannelCommands, CronCommands, HardwareCommands, HooksCommands, IntegrationCommands,
+    MigrateCommands, PeripheralCommands, ServiceCommands, SkillCommands,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -355,6 +357,12 @@ Examples:
     Skills {
         #[command(subcommand)]
         skill_command: SkillCommands,
+    },
+
+    /// Manage dynamic hooks
+    Hooks {
+        #[command(subcommand)]
+        hooks_command: zeroclaw::HooksCommands,
     },
 
     /// Migrate data from other agent runtimes
@@ -991,6 +999,9 @@ async fn main() -> Result<()> {
         } => integrations::handle_command(integration_command, &config),
 
         Commands::Skills { skill_command } => skills::handle_command(skill_command, &config),
+        Commands::Hooks { hooks_command } => {
+            hooks::cli::handle_hooks_command(hooks_command, &config)
+        }
 
         Commands::Migrate { migrate_command } => {
             migration::handle_command(migrate_command, &config).await

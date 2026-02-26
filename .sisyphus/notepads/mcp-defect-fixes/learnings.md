@@ -62,3 +62,12 @@
 - **regex crate** already in Cargo.toml deps (v1.10), so  inside the fn body works with no new deps.
 - **6 injection points**: server name (x2 loops), res.uri, res.description, prompt.name, prompt.description — all now sanitized with 256 char max.
 - **Pre-existing errors**: 5 errors in service/gateway modules (FeishuConfig, EstopConfig, OtpConfig, handle_wati_verify, enable_linger_if_needed) — none from agent.rs.
+
+### 2026-02-26: Generation counter, client close fix, code fence wrapping
+
+- **Fix A (validate_tools close)**: `add_server_with_client()` was missing the close-on-failure pattern that `add_server()` already had at lines 92-95. Wrapped `validate_tools` call in `if let Err(e)` with `client.close().await` before returning error.
+- **Fix B1 (generation counter)**: Added `AtomicU64` field to `McpRegistry` with `SeqCst` ordering. Incremented after `servers.insert()` in both `add_server()` and `add_server_with_client()`, and after `servers.remove()` in `remove_server()`.
+- **Fix B2 (Agent caching)**: Added `mcp_generation: u64` (init `u64::MAX` to force first fetch) and `mcp_cached_context: String` to Agent struct. Resources/prompts only re-fetched when `registry.generation()` differs from cached value.
+- **Fix C (code fences)**: Wrapped MCP context in triple-backtick fences inside the cached string. Updated stripping logic to detect both new fenced format and legacy unfenced format for backward compat.
+- **Brace alignment gotcha**: When replacing a multi-line block inside nested `if let` + `if` blocks, easy to lose a closing brace for the outer block.
+- **Pre-existing warnings**: 4 unused import warnings from hooks/mod.rs and tools/mod.rs — known and unrelated.

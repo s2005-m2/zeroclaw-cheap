@@ -223,16 +223,13 @@ Notes:
 
 ## `[mcp]`
 
+ZeroClaw supports MCP (Model Context Protocol) servers via `.mcp.json` configuration. MCP tools are dynamically injected into the agent's tool list at startup.
+
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `enabled` | `false` | Enable MCP (Model Context Protocol) support |
 | `tool_cap` | `50` | Maximum number of MCP tools across all servers |
 | `config_path` | `".mcp.json"` | Path to `.mcp.json` config file (relative to workspace) |
-
-Notes:
-- Tools from MCP servers are namespaced as `mcp_{server}_{tool}` to avoid collisions.
-- Adding servers at runtime via `mcp_manage` tool requires `AutonomyLevel::Full`.
-- Only stdio transport is supported.
 
 ```toml
 [mcp]
@@ -240,6 +237,48 @@ enabled = true
 tool_cap = 50
 config_path = ".mcp.json"
 ```
+
+### `.mcp.json` Configuration File
+
+Place `.mcp.json` in your workspace root or at `~/.zeroclaw/.mcp.json` (workspace takes priority):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_..."
+      }
+    }
+  }
+}
+```
+
+### `.mcp.json` Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mcpServers` | object | Map of server name to server config |
+| `command` | string | Executable to spawn (e.g., `npx`, `python`, `node`) |
+| `args` | string[] | Arguments passed to the command (default: empty) |
+| `env` | object | Optional environment variables for the server process (default: empty) |
+
+### Runtime Management
+
+Use the `mcp_manage` tool to add, remove, or list MCP servers at runtime without restarting ZeroClaw.
+
+Notes:
+- MCP tools appear as `mcp_{server}_{tool}` in the agent's tool list.
+- MCP tool names cannot shadow built-in ZeroClaw tools.
+- Adding servers at runtime via `mcp_manage` requires `autonomy.level = "full"`.
+- Only stdio transport is supported (SSE planned).
+- Config search order: workspace `.mcp.json` then `~/.zeroclaw/.mcp.json`; first found wins.
 
 ## `[cost]`
 
@@ -699,3 +738,50 @@ zeroclaw service restart
 - [providers-reference.md](providers-reference.md)
 - [operations-runbook.md](operations-runbook.md)
 - [troubleshooting.md](troubleshooting.md)
+
+## MCP (Model Context Protocol)
+
+ZeroClaw supports MCP servers via `.mcp.json` configuration. MCP tools are dynamically injected into the agent's tool list at startup.
+
+### `.mcp.json` Configuration File
+
+Place `.mcp.json` in your workspace root (`~/.zeroclaw/workspace/.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_..."
+      }
+    }
+  }
+}
+```
+
+### `.mcp.json` Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mcpServers` | object | Map of server name to server config |
+| `command` | string | Executable to spawn (e.g., `npx`, `python`) |
+| `args` | string[] | Arguments passed to the command |
+| `env` | object | Optional environment variables for the server process |
+
+### Runtime Management
+
+Use the `mcp_manage` tool to add/remove MCP servers at runtime without restarting ZeroClaw.
+
+### Notes
+
+- MCP tools appear as `mcp_{server}_{tool}` in the agent's tool list
+- Maximum 50 MCP tools per server (configurable)
+- Only stdio transport is supported (SSE planned)
+- `mcp_manage add` requires `autonomy.level = "full"` for security
+- Config search order: workspace `.mcp.json` then `~/.zeroclaw/.mcp.json`

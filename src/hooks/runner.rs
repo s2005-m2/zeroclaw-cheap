@@ -1,8 +1,10 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{future::join_all, FutureExt};
 use serde_json::Value;
 use std::panic::AssertUnwindSafe;
+use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::channels::traits::ChannelMessage;
@@ -16,23 +18,36 @@ use super::traits::{HookHandler, HookResult};
 /// Void hooks are dispatched in parallel via `join_all`.
 /// Modifying hooks run sequentially by priority (higher first), piping output
 /// and short-circuiting on `Cancel`.
+///
+/// Static handlers are registered at compile-time and never swapped.
+/// Dynamic handlers are loaded from HOOK.toml manifests and can be hot-reloaded.
 pub struct HookRunner {
-    handlers: Vec<Box<dyn HookHandler>>,
+    static_handlers: Vec<Box<dyn HookHandler>>,
+    dynamic_handlers: Arc<RwLock<Vec<Box<dyn HookHandler>>>>,
 }
 
 impl HookRunner {
     /// Create an empty runner with no handlers.
     pub fn new() -> Self {
         Self {
-            handlers: Vec::new(),
+            static_handlers: Vec::new(),
+            dynamic_handlers: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Register a handler and re-sort by descending priority.
+    /// Register a static (compile-time) handler and re-sort by descending priority.
     pub fn register(&mut self, handler: Box<dyn HookHandler>) {
-        self.handlers.push(handler);
-        self.handlers
+        self.static_handlers.push(handler);
+        self.static_handlers
             .sort_by_key(|h| std::cmp::Reverse(h.priority()));
+    }
+
+    /// Atomically replace all dynamic handlers with a new set.
+    /// The new handlers are sorted by descending priority before storing.
+    pub async fn reload_dynamic_hooks(&self, mut hooks: Vec<Box<dyn HookHandler>>) {
+        hooks.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        let mut dynamic = self.dynamic_handlers.write().await;
+        *dynamic = hooks;
     }
 
     // ---------------------------------------------------------------
@@ -40,77 +55,99 @@ impl HookRunner {
     // ---------------------------------------------------------------
 
     pub async fn fire_gateway_start(&self, host: &str, port: u16) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_gateway_start(host, port))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_gateway_stop(&self) {
-        let futs: Vec<_> = self.handlers.iter().map(|h| h.on_gateway_stop()).collect();
+        let dynamic = self.dynamic_handlers.read().await;
+        let futs: Vec<_> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.on_gateway_stop())
+            .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_session_start(&self, session_id: &str, channel: &str) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_session_start(session_id, channel))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_session_end(&self, session_id: &str, channel: &str) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_session_end(session_id, channel))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_llm_input(&self, messages: &[ChatMessage], model: &str) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_llm_input(messages, model))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_llm_output(&self, response: &ChatResponse) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_llm_output(response))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_after_tool_call(&self, tool: &str, result: &ToolResult, duration: Duration) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_after_tool_call(tool, result, duration))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_message_sent(&self, channel: &str, recipient: &str, content: &str) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_message_sent(channel, recipient, content))
             .collect();
         join_all(futs).await;
     }
 
     pub async fn fire_heartbeat_tick(&self) {
+        let dynamic = self.dynamic_handlers.read().await;
         let futs: Vec<_> = self
-            .handlers
+            .static_handlers
             .iter()
+            .chain(dynamic.iter())
             .map(|h| h.on_heartbeat_tick())
             .collect();
         join_all(futs).await;
@@ -125,7 +162,15 @@ impl HookRunner {
         mut provider: String,
         mut model: String,
     ) -> HookResult<(String, String)> {
-        for h in &self.handlers {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
             let hook_name = h.name();
             match AssertUnwindSafe(h.before_model_resolve(provider.clone(), model.clone()))
                 .catch_unwind()
@@ -154,7 +199,15 @@ impl HookRunner {
     }
 
     pub async fn run_before_prompt_build(&self, mut prompt: String) -> HookResult<String> {
-        for h in &self.handlers {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
             let hook_name = h.name();
             match AssertUnwindSafe(h.before_prompt_build(prompt.clone()))
                 .catch_unwind()
@@ -184,7 +237,15 @@ impl HookRunner {
         mut messages: Vec<ChatMessage>,
         mut model: String,
     ) -> HookResult<(Vec<ChatMessage>, String)> {
-        for h in &self.handlers {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
             let hook_name = h.name();
             match AssertUnwindSafe(h.before_llm_call(messages.clone(), model.clone()))
                 .catch_unwind()
@@ -217,7 +278,15 @@ impl HookRunner {
         mut name: String,
         mut args: Value,
     ) -> HookResult<(String, Value)> {
-        for h in &self.handlers {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
             let hook_name = h.name();
             match AssertUnwindSafe(h.before_tool_call(name.clone(), args.clone()))
                 .catch_unwind()
@@ -249,7 +318,15 @@ impl HookRunner {
         &self,
         mut message: ChannelMessage,
     ) -> HookResult<ChannelMessage> {
-        for h in &self.handlers {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
             let hook_name = h.name();
             match AssertUnwindSafe(h.on_message_received(message.clone()))
                 .catch_unwind()
@@ -280,7 +357,15 @@ impl HookRunner {
         mut recipient: String,
         mut content: String,
     ) -> HookResult<(String, String, String)> {
-        for h in &self.handlers {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
             let hook_name = h.name();
             match AssertUnwindSafe(h.on_message_sending(
                 channel.clone(),
@@ -311,6 +396,105 @@ impl HookRunner {
             }
         }
         HookResult::Continue((channel, recipient, content))
+    }
+
+    pub async fn run_on_cron_delivery(
+        &self,
+        mut source: String,
+        mut channel: String,
+        mut recipient: String,
+        mut content: String,
+    ) -> HookResult<(String, String, String, String)> {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
+            let hook_name = h.name();
+            match AssertUnwindSafe(h.on_cron_delivery(
+                source.clone(),
+                channel.clone(),
+                recipient.clone(),
+                content.clone(),
+            ))
+            .catch_unwind()
+            .await
+            {
+                Ok(HookResult::Continue((s, c, r, ct))) => {
+                    source = s;
+                    channel = c;
+                    recipient = r;
+                    content = ct;
+                }
+                Ok(HookResult::Cancel(reason)) => {
+                    info!(
+                        hook = hook_name,
+                        reason, "on_cron_delivery cancelled by hook"
+                    );
+                    return HookResult::Cancel(reason);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        hook = hook_name,
+                        "on_cron_delivery hook panicked; continuing with previous values"
+                    );
+                }
+            }
+        }
+        HookResult::Continue((source, channel, recipient, content))
+    }
+    pub async fn run_on_docs_sync_notify(
+        &self,
+        mut file_path: String,
+        mut channel: String,
+        mut recipient: String,
+        mut content: String,
+    ) -> HookResult<(String, String, String, String)> {
+        let dynamic = self.dynamic_handlers.read().await;
+        let mut all: Vec<&dyn HookHandler> = self
+            .static_handlers
+            .iter()
+            .chain(dynamic.iter())
+            .map(|h| h.as_ref())
+            .collect();
+        all.sort_by_key(|h| std::cmp::Reverse(h.priority()));
+        for h in &all {
+            let hook_name = h.name();
+            match AssertUnwindSafe(h.on_docs_sync_notify(
+                file_path.clone(),
+                channel.clone(),
+                recipient.clone(),
+                content.clone(),
+            ))
+            .catch_unwind()
+            .await
+            {
+                Ok(HookResult::Continue((fp, c, r, ct))) => {
+                    file_path = fp;
+                    channel = c;
+                    recipient = r;
+                    content = ct;
+                }
+                Ok(HookResult::Cancel(reason)) => {
+                    info!(
+                        hook = hook_name,
+                        reason, "on_docs_sync_notify cancelled by hook"
+                    );
+                    return HookResult::Cancel(reason);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        hook = hook_name,
+                        "on_docs_sync_notify hook panicked; continuing with previous values"
+                    );
+                }
+            }
+        }
+        HookResult::Continue((file_path, channel, recipient, content))
     }
 }
 
@@ -424,7 +608,7 @@ mod tests {
         runner.register(Box::new(high));
         runner.register(Box::new(mid));
 
-        let names: Vec<&str> = runner.handlers.iter().map(|h| h.name()).collect();
+        let names: Vec<&str> = runner.static_handlers.iter().map(|h| h.name()).collect();
         assert_eq!(names, vec!["high", "mid", "low"]);
     }
 
@@ -478,6 +662,144 @@ mod tests {
         match runner.run_before_prompt_build("hello".into()).await {
             HookResult::Continue(result) => assert_eq!(result, "HELLO_done"),
             HookResult::Cancel(_) => panic!("should not cancel"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_swaps_dynamic_handlers() {
+        let mut runner = HookRunner::new();
+
+        // Register a static hook
+        let (static_hook, static_count) = CountingHook::new("static_hook", 0);
+        runner.register(Box::new(static_hook));
+
+        // Load initial dynamic hooks
+        let (dyn_old, dyn_old_count) = CountingHook::new("dyn_old", 0);
+        runner
+            .reload_dynamic_hooks(vec![Box::new(dyn_old)])
+            .await;
+
+        // Fire once — both should fire
+        runner.fire_heartbeat_tick().await;
+        assert_eq!(static_count.load(Ordering::SeqCst), 1);
+        assert_eq!(dyn_old_count.load(Ordering::SeqCst), 1);
+
+        // Reload with a new dynamic hook
+        let (dyn_new, dyn_new_count) = CountingHook::new("dyn_new", 0);
+        runner
+            .reload_dynamic_hooks(vec![Box::new(dyn_new)])
+            .await;
+
+        // Fire again — static + new dynamic should fire, old dynamic should NOT
+        runner.fire_heartbeat_tick().await;
+        assert_eq!(static_count.load(Ordering::SeqCst), 2);
+        assert_eq!(dyn_old_count.load(Ordering::SeqCst), 1); // unchanged
+        assert_eq!(dyn_new_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn static_handlers_unaffected_by_reload() {
+        let mut runner = HookRunner::new();
+        let (static_hook, static_count) = CountingHook::new("static_hook", 0);
+        runner.register(Box::new(static_hook));
+
+        // Reload dynamic with empty vec
+        runner.reload_dynamic_hooks(vec![]).await;
+
+        // Static should still fire
+        runner.fire_heartbeat_tick().await;
+        assert_eq!(static_count.load(Ordering::SeqCst), 1);
+
+        // Reload dynamic with a new hook
+        let (dyn_hook, _) = CountingHook::new("dyn_hook", 0);
+        runner
+            .reload_dynamic_hooks(vec![Box::new(dyn_hook)])
+            .await;
+
+        // Static should still fire
+        runner.fire_heartbeat_tick().await;
+        assert_eq!(static_count.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn empty_reload_clears_dynamic() {
+        let runner = HookRunner::new();
+        // Load a dynamic hook
+        let (dyn_hook, dyn_count) = CountingHook::new("dyn_hook", 0);
+        runner
+            .reload_dynamic_hooks(vec![Box::new(dyn_hook)])
+            .await;
+        // Fire once — dynamic should fire
+        runner.fire_heartbeat_tick().await;
+        assert_eq!(dyn_count.load(Ordering::SeqCst), 1);
+        // Reload with empty vec — clears dynamic
+        runner.reload_dynamic_hooks(vec![]).await;
+        // Fire again — dynamic should NOT fire
+        runner.fire_heartbeat_tick().await;
+        assert_eq!(dyn_count.load(Ordering::SeqCst), 1); // unchanged
+    }
+
+    #[tokio::test]
+    async fn cron_delivery_cancelled_by_hook() {
+        let mut runner = HookRunner::new();
+        runner.register(Box::new(CancelCronDeliveryHook {
+            name: "cron_blocker".into(),
+            priority: 10,
+        }));
+        let result = runner
+            .run_on_cron_delivery(
+                "scheduler".into(),
+                "telegram".into(),
+                "user_a".into(),
+                "daily report".into(),
+            )
+            .await;
+        assert!(result.is_cancel());
+    }
+
+    #[tokio::test]
+    async fn cron_delivery_passes_through_with_no_hooks() {
+        let runner = HookRunner::new();
+        let result = runner
+            .run_on_cron_delivery(
+                "scheduler".into(),
+                "telegram".into(),
+                "user_a".into(),
+                "daily report".into(),
+            )
+            .await;
+        match result {
+            HookResult::Continue((s, c, r, ct)) => {
+                assert_eq!(s, "scheduler");
+                assert_eq!(c, "telegram");
+                assert_eq!(r, "user_a");
+                assert_eq!(ct, "daily report");
+            }
+            HookResult::Cancel(_) => panic!("should not cancel"),
+        }
+    }
+
+    /// A hook that cancels on_cron_delivery.
+    struct CancelCronDeliveryHook {
+        name: String,
+        priority: i32,
+    }
+
+    #[async_trait]
+    impl HookHandler for CancelCronDeliveryHook {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn priority(&self) -> i32 {
+            self.priority
+        }
+        async fn on_cron_delivery(
+            &self,
+            _source: String,
+            _channel: String,
+            _recipient: String,
+            _content: String,
+        ) -> HookResult<(String, String, String, String)> {
+            HookResult::Cancel("cron delivery blocked".into())
         }
     }
 }

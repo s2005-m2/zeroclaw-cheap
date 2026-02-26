@@ -222,6 +222,8 @@ struct ChannelRuntimeContext {
     interrupt_on_new_message: bool,
     multimodal: crate::config::MultimodalConfig,
     hooks: Option<Arc<crate::hooks::HookRunner>>,
+    hooks_config: Arc<crate::config::schema::HooksConfig>,
+    last_hook_stamp: Arc<Mutex<Option<u64>>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
 }
 
@@ -1519,6 +1521,21 @@ async fn process_channel_message(
     let target_channel = ctx.channels_by_name.get(&msg.channel).cloned();
     if let Err(err) = maybe_apply_runtime_config_update(ctx.as_ref()).await {
         tracing::warn!("Failed to apply runtime config update: {err}");
+    }
+    // Hot-reload dynamic hooks when stamp file changes.
+    if let Some(runner) = &ctx.hooks {
+        let needs_reload = {
+            let mut stamp = ctx.last_hook_stamp.lock().unwrap_or_else(|e| e.into_inner());
+            crate::hooks::reload::check_reload_stamp(ctx.workspace_dir.as_path(), &mut stamp)
+        };
+        if needs_reload {
+            crate::hooks::reload::do_reload_hooks(
+                ctx.workspace_dir.as_path(),
+                &ctx.hooks_config,
+                runner,
+            )
+            .await;
+        }
     }
     if handle_runtime_command_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await {
         return;
@@ -3070,6 +3087,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        None,  // shared_skills
     ));
 
     let skills = crate::skills::load_skills_with_config(&workspace, &config);
@@ -3286,6 +3304,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
         } else {
             None
         },
+        hooks_config: Arc::new(config.hooks.clone()),
+        last_hook_stamp: Arc::new(Mutex::new(None)),
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
     });
 
@@ -3496,6 +3516,8 @@ mod tests {
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
@@ -3545,6 +3567,8 @@ mod tests {
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
@@ -3597,6 +3621,8 @@ mod tests {
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
@@ -4076,6 +4102,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+        hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+        last_hook_stamp: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -4135,6 +4163,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+        hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+        last_hook_stamp: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -4207,6 +4237,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4266,6 +4298,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4334,6 +4368,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4423,6 +4459,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4494,6 +4532,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4580,6 +4620,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4651,6 +4693,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4711,6 +4755,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4882,6 +4928,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -4962,6 +5010,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: true,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -5054,6 +5104,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: true,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -5128,6 +5180,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -5187,6 +5241,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -5703,6 +5759,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -5788,6 +5846,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -5873,6 +5933,8 @@ BTC is currently around $65,000 based on latest tool output."#
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -6422,6 +6484,8 @@ This is an example JSON object for profile settings."#;
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 
@@ -6488,6 +6552,8 @@ This is an example JSON object for profile settings."#;
             interrupt_on_new_message: false,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            hooks_config: Arc::new(crate::config::schema::HooksConfig::default()),
+            last_hook_stamp: Arc::new(Mutex::new(None)),
             non_cli_excluded_tools: Arc::new(Vec::new()),
         });
 

@@ -233,6 +233,8 @@ pub struct ProviderCapabilities {
     pub native_tool_calling: bool,
     /// Whether the provider supports vision / image inputs.
     pub vision: bool,
+    /// Whether the provider supports video inputs.
+    pub video: bool,
 }
 
 /// Provider-specific tool payload formats.
@@ -388,6 +390,11 @@ pub trait Provider: Send + Sync {
         self.capabilities().vision
     }
 
+    /// Whether provider supports multimodal video input.
+    fn supports_video(&self) -> bool {
+        self.capabilities().video
+    }
+
     /// Warm up the HTTP connection pool (TLS handshake, DNS, HTTP/2 setup).
     /// Default implementation is a no-op; providers with HTTP clients should override.
     async fn warmup(&self) -> anyhow::Result<()> {
@@ -498,6 +505,7 @@ mod tests {
             ProviderCapabilities {
                 native_tool_calling: true,
                 vision: true,
+                video: false,
             }
         }
 
@@ -613,14 +621,17 @@ mod tests {
         let caps1 = ProviderCapabilities {
             native_tool_calling: true,
             vision: false,
+            video: false,
         };
         let caps2 = ProviderCapabilities {
             native_tool_calling: true,
             vision: false,
+            video: false,
         };
         let caps3 = ProviderCapabilities {
             native_tool_calling: false,
             vision: false,
+            video: false,
         };
 
         assert_eq!(caps1, caps2);

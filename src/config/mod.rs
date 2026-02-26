@@ -7,16 +7,16 @@ pub use schema::{
     build_runtime_proxy_client_with_timeouts, runtime_proxy_config, set_runtime_proxy_config,
     AgentConfig, AuditConfig, AutonomyConfig, BrowserComputerUseConfig, BrowserConfig,
     BuiltinHooksConfig, ChannelsConfig, ClassificationRule, ComposioConfig, Config, CostConfig,
-    CronConfig, DelegateAgentConfig, DiscordConfig, DockerRuntimeConfig, EmbeddingRouteConfig,
-    EstopConfig, FeishuConfig, GatewayConfig, HardwareConfig, HardwareTransport, HeartbeatConfig,
-    HooksConfig, HttpRequestConfig, IMessageConfig, IdentityConfig, LarkConfig, MatrixConfig,
-    McpConfig, MemoryConfig, ModelRouteConfig, MultimodalConfig, NextcloudTalkConfig,
-    ObservabilityConfig, OtpConfig, PeripheralBoardConfig, PeripheralsConfig, ProxyConfig,
-    ProxyScope, QueryClassificationConfig, ReliabilityConfig, ResourceLimitsConfig, RuntimeConfig,
-    SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig, SkillsConfig,
-    SkillsPromptInjectionMode, SlackConfig, StorageConfig, StorageProviderConfig,
-    StorageProviderSection, StreamMode, TelegramConfig, TranscriptionConfig, TunnelConfig, VpnConfig,
-    WebSearchConfig, WebhookConfig,
+    CronConfig, DelegateAgentConfig, DiscordConfig, DockerRuntimeConfig, DocsSyncConfig,
+    EmbeddingRouteConfig, EstopConfig, FeishuConfig, GatewayConfig, HardwareConfig,
+    HardwareTransport, HeartbeatConfig, HooksConfig, HttpRequestConfig, IMessageConfig,
+    IdentityConfig, LarkConfig, MatrixConfig, McpConfig, MemoryConfig, ModelRouteConfig,
+    MultimodalConfig, NextcloudTalkConfig, ObservabilityConfig, OtpConfig, PeripheralBoardConfig,
+    PeripheralsConfig, ProxyConfig, ProxyScope, QueryClassificationConfig, ReliabilityConfig,
+    ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig,
+    SecretsConfig, SecurityConfig, SkillsConfig, SkillsPromptInjectionMode, SlackConfig,
+    StorageConfig, StorageProviderConfig, StorageProviderSection, StreamMode, TelegramConfig,
+    TranscriptionConfig, TunnelConfig, VpnConfig, WebSearchConfig, WebhookConfig,
 };
 
 pub fn name_and_presence<T: traits::ChannelConfig>(channel: Option<&T>) -> (&'static str, bool) {
@@ -64,6 +64,8 @@ mod tests {
             use_feishu: false,
             receive_mode: crate::config::schema::LarkReceiveMode::Websocket,
             port: None,
+            stream_mode: crate::config::schema::StreamMode::default(),
+            draft_update_interval_ms: 500,
         };
         let feishu = FeishuConfig {
             app_id: "app-id".into(),
@@ -73,6 +75,8 @@ mod tests {
             allowed_users: vec![],
             receive_mode: crate::config::schema::LarkReceiveMode::Websocket,
             port: None,
+            stream_mode: crate::config::schema::StreamMode::default(),
+            draft_update_interval_ms: 500,
         };
 
         let nextcloud_talk = NextcloudTalkConfig {
