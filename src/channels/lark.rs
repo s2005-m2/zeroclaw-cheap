@@ -1828,7 +1828,7 @@ impl LarkChannel {
 /// string constants (not Unicode). See Feishu Open API reaction docs for valid values.
 /// When per-locale pools are needed, reintroduce locale detection with a
 /// proper library (e.g. `whatlang`) instead of hand-rolled character matching.
-const LARK_ACK_REACTIONS: &[&str] = &["THUMBSUP", "OK", "MUSCLE", "CELEBRATE", "HEART"];
+const LARK_ACK_REACTIONS: &[&str] = &["OK"];
 
 fn pick_uniform_index(len: usize) -> usize {
     debug_assert!(len > 0);
