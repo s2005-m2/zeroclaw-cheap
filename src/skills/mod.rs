@@ -170,7 +170,7 @@ fn load_skills_from_directory(skills_dir: &Path, skip_audit: bool) -> Vec<Skill>
         }
 
         if !skip_audit {
-            match audit::audit_skill_directory(&path) {
+            match audit::audit_skill_directory_with_boundary(&path, Some(skills_dir)) {
                 Ok(report) if report.is_clean() => {}
                 Ok(report) => {
                     tracing::warn!(
