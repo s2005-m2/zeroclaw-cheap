@@ -2878,6 +2878,28 @@ fn collect_configured_channels(
         });
     }
 
+    #[cfg(feature = "feishu-docs-sync")]
+    let docs_sharer: Option<std::sync::Arc<crate::docs_sync::DocsSyncSharer>> = if config.docs_sync.enabled {
+        let app_id = config.docs_sync.app_id.clone()
+            .or_else(|| config.channels_config.feishu.as_ref().map(|f| f.app_id.clone()))
+            .or_else(|| config.channels_config.lark.as_ref().map(|l| l.app_id.clone()));
+        let app_secret = config.docs_sync.app_secret.clone()
+            .or_else(|| config.channels_config.feishu.as_ref().map(|f| f.app_secret.clone()))
+            .or_else(|| config.channels_config.lark.as_ref().map(|l| l.app_secret.clone()));
+        match (app_id, app_secret) {
+            (Some(id), Some(secret)) => {
+                let lock_path = config.config_path
+                    .parent()
+                    .map_or_else(|| std::path::PathBuf::from("."), std::path::PathBuf::from)
+                    .join("docs_sync.lock");
+                Some(std::sync::Arc::new(crate::docs_sync::DocsSyncSharer::new(id, secret, lock_path)))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     #[cfg(feature = "channel-lark")]
     if let Some(ref lk) = config.channels_config.lark {
         if lk.use_feishu {
@@ -2891,13 +2913,27 @@ fn collect_configured_channels(
                 );
                 channels.push(ConfiguredChannel {
                     display_name: "Feishu",
-                    channel: Arc::new(LarkChannel::from_config(lk)),
+                    channel: Arc::new({
+                        let mut ch = LarkChannel::from_config(lk);
+                        #[cfg(feature = "feishu-docs-sync")]
+                        if let Some(ref sharer) = docs_sharer {
+                            ch.set_docs_sharer(std::sync::Arc::clone(sharer));
+                        }
+                        ch
+                    }),
                 });
             }
         } else {
             channels.push(ConfiguredChannel {
                 display_name: "Lark",
-                channel: Arc::new(LarkChannel::from_lark_config(lk)),
+                channel: Arc::new({
+                    let mut ch = LarkChannel::from_lark_config(lk);
+                    #[cfg(feature = "feishu-docs-sync")]
+                    if let Some(ref sharer) = docs_sharer {
+                        ch.set_docs_sharer(std::sync::Arc::clone(sharer));
+                    }
+                    ch
+                }),
             });
         }
     }
@@ -2906,7 +2942,14 @@ fn collect_configured_channels(
     if let Some(ref fs) = config.channels_config.feishu {
         channels.push(ConfiguredChannel {
             display_name: "Feishu",
-            channel: Arc::new(LarkChannel::from_feishu_config(fs)),
+            channel: Arc::new({
+                let mut ch = LarkChannel::from_feishu_config(fs);
+                #[cfg(feature = "feishu-docs-sync")]
+                if let Some(ref sharer) = docs_sharer {
+                    ch.set_docs_sharer(std::sync::Arc::clone(sharer));
+                }
+                ch
+            }),
         });
     }
 

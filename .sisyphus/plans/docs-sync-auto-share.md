@@ -136,7 +136,7 @@ Wave FINAL (Review):
 ## TODOs
 
 
-- [ ] 1. FeishuDocsClient 新增 `add_permission_member` 方法
+- [x] 1. FeishuDocsClient 新增 `add_permission_member` 方法
 
   **What to do**:
   - 在 `src/docs_sync/client.rs` 的 `FeishuDocsClient` impl 块中新增 `pub async fn add_permission_member(&self, document_id: &str, open_id: &str, perm: &str) -> Result<()>`
@@ -206,7 +206,7 @@ Wave FINAL (Review):
 
 ---
 
-- [ ] 2. 共享状态模块 — 暴露 doc_ids + 已分享用户持久化
+- [x] 2. 共享状态模块 — 暴露 doc_ids + 已分享用户持久化
 
   **What to do**:
   - 在 `src/docs_sync/mod.rs` 中新增一个轻量的共享状态结构，供 LarkChannel 调用
@@ -274,7 +274,7 @@ Wave FINAL (Review):
 
 ---
 
-- [ ] 3. LarkChannel 集成 — 检测新用户并触发文档分享
+- [x] 3. LarkChannel 集成 — 检测新用户并触发文档分享
 
   **What to do**:
   - 在 `src/channels/lark.rs` 的 `LarkChannel` struct 中新增一个可选字段：`docs_sharer: Option<Arc<crate::docs_sync::DocsSyncSharer>>`
@@ -345,7 +345,7 @@ Wave FINAL (Review):
   - Files: `src/channels/lark.rs`, `src/daemon/mod.rs`
   - Pre-commit: `cargo clippy --all-targets -- -D warnings`
 ---
-- [ ] 4. 全量编译验证 + clippy + test
+- [x] 4. 全量编译验证 + clippy + test
   **What to do**:
   - 运行 `cargo clippy --all-targets -- -D warnings` 确认零警告
   - 运行 `cargo test` 确认所有测试通过
@@ -383,15 +383,15 @@ Wave FINAL (Review):
 
 ## Final Verification Wave
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. For each "Must Have": verify implementation exists. For each "Must NOT Have": search codebase for forbidden patterns — reject with file:line if found. Check evidence files exist in .sisyphus/evidence/. Compare deliverables against plan.
   Output: `Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   Run `cargo clippy --all-targets -- -D warnings` + `cargo test`. Review all changed files for: `unwrap()` in non-test code, empty catches, unused imports. Check AI slop: excessive comments, over-abstraction.
   Output: `Build [PASS/FAIL] | Clippy [PASS/FAIL] | Tests [N pass/N fail] | VERDICT`
 
-- [ ] F3. **Scope Fidelity Check** — `deep`
+- [x] F3. **Scope Fidelity Check** — `deep`
   For each task: read "What to do", read actual diff. Verify 1:1 — everything in spec was built, nothing beyond spec was built. Check "Must NOT do" compliance. Flag unaccounted changes.
   Output: `Tasks [N/N compliant] | Unaccounted [CLEAN/N files] | VERDICT`
 

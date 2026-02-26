@@ -284,6 +284,9 @@ pub struct LarkChannel {
     last_draft_update: Arc<std::sync::Mutex<HashMap<String, Instant>>>,
     /// Typing indicator card IDs per recipient (for "正在处理..." cards).
     typing_card_ids: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    /// Optional docs_sync sharer for auto-sharing documents with new users.
+    #[cfg(feature = "feishu-docs-sync")]
+    docs_sharer: Option<std::sync::Arc<crate::docs_sync::DocsSyncSharer>>,
 }
 
 impl LarkChannel {
@@ -327,6 +330,8 @@ impl LarkChannel {
             card_sequence: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_draft_update: Arc::new(std::sync::Mutex::new(HashMap::new())),
             typing_card_ids: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sharer: None,
         }
     }
 
@@ -389,6 +394,12 @@ impl LarkChannel {
         self.stream_mode = stream_mode;
         self.draft_update_interval_ms = draft_update_interval_ms;
         self
+    }
+
+    /// Set the docs_sync sharer for auto-sharing documents with Feishu users.
+    #[cfg(feature = "feishu-docs-sync")]
+    pub fn set_docs_sharer(&mut self, sharer: std::sync::Arc<crate::docs_sync::DocsSyncSharer>) {
+        self.docs_sharer = Some(sharer);
     }
 
     fn http_client(&self) -> reqwest::Client {
@@ -748,6 +759,18 @@ impl LarkChannel {
                     if !self.is_user_allowed(sender_open_id) {
                         tracing::warn!("Lark WS: ignoring {sender_open_id} (not in allowed_users)");
                         continue;
+                    }
+
+                    // Auto-share docs_sync documents with new users
+                    #[cfg(feature = "feishu-docs-sync")]
+                    if let Some(ref sharer) = self.docs_sharer {
+                        let sharer = std::sync::Arc::clone(sharer);
+                        let oid = sender_open_id.to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) = sharer.share_all_docs_with(&oid).await {
+                                tracing::warn!("docs_sync: auto-share failed for {oid}: {e}");
+                            }
+                        });
                     }
 
                     let lark_msg = &recv.message;
@@ -1239,6 +1262,17 @@ impl LarkChannel {
         if !self.is_user_allowed(open_id) {
             tracing::warn!("Lark: ignoring message from unauthorized user: {open_id}");
             return messages;
+        }
+        // Auto-share docs_sync documents with new users
+        #[cfg(feature = "feishu-docs-sync")]
+        if let Some(ref sharer) = self.docs_sharer {
+            let sharer = std::sync::Arc::clone(sharer);
+            let oid = open_id.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = sharer.share_all_docs_with(&oid).await {
+                    tracing::warn!("docs_sync: auto-share failed for {oid}: {e}");
+                }
+            });
         }
 
         // Extract message content (text and post supported)

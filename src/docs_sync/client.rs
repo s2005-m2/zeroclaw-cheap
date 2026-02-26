@@ -326,4 +326,40 @@ impl FeishuDocsClient {
             .to_string();
         Ok(doc_id)
     }
+
+    /// POST /drive/v1/permissions/{document_id}/members — add a collaborator to a document.
+    pub async fn add_permission_member(
+        &self,
+        document_id: &str,
+        open_id: &str,
+        perm: &str,
+    ) -> Result<()> {
+        let token = self.get_token().await?;
+        let url = format!(
+            "{FEISHU_BASE_URL}/drive/v1/permissions/{document_id}/members?type=docx&need_notification=false"
+        );
+        let body = serde_json::json!({
+            "member_type": "openid",
+            "member_id": open_id,
+            "perm": perm,
+            "type": "user"
+        });
+        let resp = self
+            .send_with_retry(|| self.http.post(&url).bearer_auth(&token).json(&body))
+            .await?;
+        let status = resp.status();
+        let data: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            bail!("Feishu add_permission_member failed: status={status}, body={data}");
+        }
+        let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            bail!("Feishu add_permission_member error: {msg}");
+        }
+        Ok(())
+    }
 }
