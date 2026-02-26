@@ -176,16 +176,15 @@ impl McpClient {
             params: Some(serde_json::to_value(&params)?),
         };
 
-        self.transport
-            .send(&request)
-            .await
-            .context("Failed to send tools/call request")?;
+        self.transport.send(&request).await.context(
+            "Failed to send request to MCP server — the server may have crashed or disconnected",
+        )?;
 
         let response = self
             .transport
             .receive()
             .await
-            .context("Failed to receive tools/call response")?;
+            .context("Failed to receive response from MCP server — the server may have crashed or disconnected")?;
 
         if let Some(error) = response.error {
             anyhow::bail!("tools/call failed: {}", error.message);

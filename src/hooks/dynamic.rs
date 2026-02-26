@@ -270,7 +270,10 @@ impl HookHandler for DynamicHookHandler {
         match self.execute_action().await {
             Ok(_) => HookResult::Continue((provider, model)),
             Err(e) => {
-                warn!(hook = self.name(), "before_model_resolve action failed: {e}");
+                warn!(
+                    hook = self.name(),
+                    "before_model_resolve action failed: {e}"
+                );
                 HookResult::Continue((provider, model))
             }
         }
@@ -333,7 +336,7 @@ impl HookHandler for DynamicHookHandler {
             Ok(_) => HookResult::Continue((name, args)),
             Err(e) => {
                 warn!(hook = self.name(), "before_tool_call action failed: {e}");
-                HookResult::Cancel(format!("hook {} blocked tool call: {e}", self.name()))
+                HookResult::Continue((name, args))
             }
         }
     }
@@ -368,7 +371,11 @@ impl HookHandler for DynamicHookHandler {
             return HookResult::Continue((channel, recipient, content));
         }
         // PromptInject on sending: modify content
-        if let HookAction::PromptInject { content: inject, position } = &self.hook.manifest.action {
+        if let HookAction::PromptInject {
+            content: inject,
+            position,
+        } = &self.hook.manifest.action
+        {
             let pos = position.as_deref().unwrap_or("prepend");
             let modified = if pos == "append" {
                 format!("{content}\n{inject}")
@@ -523,7 +530,12 @@ mod tests {
     }
     #[test]
     fn name_and_priority_from_manifest() {
-        let hook = make_hook("test-hook", HookEvent::OnSessionStart, 42, shell_action("echo hi"));
+        let hook = make_hook(
+            "test-hook",
+            HookEvent::OnSessionStart,
+            42,
+            shell_action("echo hi"),
+        );
         let handler = DynamicHookHandler::new(hook, 30);
         assert_eq!(handler.name(), "test-hook");
         assert_eq!(handler.priority(), 42);

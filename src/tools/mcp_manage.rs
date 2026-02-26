@@ -14,7 +14,6 @@ use crate::security::policy::AutonomyLevel;
 pub struct McpManageTool {
     registry: Arc<McpRegistry>,
     autonomy_level: AutonomyLevel,
-    #[allow(dead_code)]
     config_path: PathBuf,
 }
 

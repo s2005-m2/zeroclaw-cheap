@@ -140,7 +140,9 @@ impl Tool for SkillManageTool {
             other => Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Unknown action '{other}': expected create/read/update/delete/list")),
+                error: Some(format!(
+                    "Unknown action '{other}': expected create/read/update/delete/list"
+                )),
             }),
         }
     }
@@ -149,10 +151,7 @@ impl Tool for SkillManageTool {
 impl SkillManageTool {
     /// Extract and validate the "name" field from args.
     fn extract_name(args: &serde_json::Value) -> Result<String, ToolResult> {
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
         if name.is_empty() {
             return Err(ToolResult {
                 success: false,
@@ -190,8 +189,14 @@ impl SkillManageTool {
 
         if let Some(tools) = args.get("tools").and_then(|v| v.as_array()) {
             for tool in tools {
-                let t_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("unnamed");
-                let t_desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                let t_name = tool
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unnamed");
+                let t_desc = tool
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let t_kind = tool.get("kind").and_then(|v| v.as_str()).unwrap_or("shell");
                 let t_cmd = tool.get("command").and_then(|v| v.as_str()).unwrap_or("");
                 toml.push_str(&format!(
@@ -229,7 +234,10 @@ impl SkillManageTool {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Skill '{name}' already exists at {}", skill_path.display())),
+                error: Some(format!(
+                    "Skill '{name}' already exists at {}",
+                    skill_path.display()
+                )),
             });
         }
         if let Err(e) = fs::create_dir_all(&skill_path) {
@@ -265,7 +273,8 @@ impl SkillManageTool {
             output: json!({
                 "created": name,
                 "path": skill_path.display().to_string()
-            }).to_string(),
+            })
+            .to_string(),
             error: None,
         })
     }
@@ -293,7 +302,8 @@ impl SkillManageTool {
                         "name": name,
                         "format": "toml",
                         "content": content
-                    }).to_string(),
+                    })
+                    .to_string(),
                     error: None,
                 }),
                 Err(e) => Ok(ToolResult {
@@ -310,7 +320,8 @@ impl SkillManageTool {
                         "name": name,
                         "format": "md",
                         "content": content
-                    }).to_string(),
+                    })
+                    .to_string(),
                     error: None,
                 }),
                 Err(e) => Ok(ToolResult {
@@ -444,7 +455,9 @@ impl SkillManageTool {
     async fn reload_shared_state(&self) {
         let mut state = self.shared_state.write().await;
         crate::skills::reload_skills(&mut state, &self.workspace_dir, &self.config);
-        state.dirty = true;
+        state
+            .dirty
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -587,10 +600,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success, "update failed: {:?}", result.error);
-        let content = fs::read_to_string(
-            dir.path().join("skills/upd-skill/SKILL.toml"),
-        )
-        .unwrap();
+        let content = fs::read_to_string(dir.path().join("skills/upd-skill/SKILL.toml")).unwrap();
         assert!(content.contains("Updated desc"));
     }
     #[tokio::test]
@@ -630,10 +640,7 @@ mod tests {
         }))
         .await
         .unwrap();
-        let result = tool
-            .execute(json!({ "action": "list" }))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({ "action": "list" })).await.unwrap();
         assert!(result.success, "list failed: {:?}", result.error);
         assert!(result.output.contains("skill-a"));
         assert!(result.output.contains("skill-b"));

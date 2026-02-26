@@ -6,8 +6,8 @@
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
+use tokio::sync::mpsc::Receiver;
 
 /// Debounce interval for file change events.
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
@@ -25,7 +25,7 @@ impl FileWatcher {
     /// `PathBuf` values for each changed file. The caller is responsible
     /// for triggering sync on receive.
     pub fn watch(paths: &[PathBuf]) -> Result<Self> {
-        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<PathBuf>(100);
 
         // Track last event time per path for debouncing
         let debounce_tx = tx.clone();
@@ -61,7 +61,7 @@ impl FileWatcher {
                         }
                     }
                     guard.insert(path.clone(), now);
-                    let _ = debounce_tx.send(path);
+                    let _ = debounce_tx.blocking_send(path);
                 }
             })?;
 

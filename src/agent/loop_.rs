@@ -2705,7 +2705,7 @@ pub async fn run(
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
     let shared_skills = Arc::new(tokio::sync::RwLock::new(crate::skills::SkillsState {
         skills: skills.clone(),
-        dirty: false,
+        dirty: std::sync::atomic::AtomicBool::new(false),
     }));
 
     // ── Tools (including memory tools and peripherals) ────────────
@@ -3130,7 +3130,11 @@ pub async fn run(
 
             // Hot-reload skills if dirty
             {
-                let needs_reload = shared_skills.read().await.dirty;
+                let needs_reload = shared_skills
+                    .read()
+                    .await
+                    .dirty
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 if needs_reload {
                     let mut state = shared_skills.write().await;
                     crate::skills::reload_skills(&mut state, &config.workspace_dir, &config);
@@ -3153,7 +3157,9 @@ pub async fn run(
                         history[0] = ChatMessage::system(&new_prompt);
                     }
                     system_prompt = new_prompt;
-                    state.dirty = false;
+                    state
+                        .dirty
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 
@@ -3227,7 +3233,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         &config.agents,
         config.api_key.as_deref(),
         &config,
-        None,  // shared_skills — not needed for single message mode
+        None, // shared_skills — not needed for single message mode
     );
     let peripheral_tools: Vec<Box<dyn Tool>> =
         crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
@@ -3317,7 +3323,10 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
             "Query connected hardware for reported GPIO pins and LED pin. Use when user asks what pins are available.",
         ));
     }
-    tool_descs.push(("skill_manage", "Create, read, update, delete, and list agent skills at runtime."));
+    tool_descs.push((
+        "skill_manage",
+        "Create, read, update, delete, and list agent skills at runtime.",
+    ));
     let bootstrap_max_chars = if config.agent.compact_context {
         Some(6000)
     } else {

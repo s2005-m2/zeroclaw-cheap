@@ -5,10 +5,19 @@
 //! to each node before probing, so each node gets an independent latency
 //! measurement. Supports background monitoring loop with graceful shutdown.
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
+
+/// Prevents concurrent health checks from interfering with each other's node switching.
+static HEALTH_CHECK_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+/// Returns the global health-check mutex, initializing on first access.
+fn health_check_lock() -> &'static tokio::sync::Mutex<()> {
+    HEALTH_CHECK_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 /// Connectivity check URL — returns HTTP 204 on success.
 const PROBE_URL: &str = "http://connectivitycheck.gstatic.com/generate_204";
@@ -166,6 +175,7 @@ impl HealthChecker {
         group_name: &str,
         current_active: Option<&str>,
     ) -> Vec<(String, HealthResult)> {
+        let _guard = health_check_lock().lock().await;
         let mut results = Vec::with_capacity(node_names.len());
 
         for name in node_names {

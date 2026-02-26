@@ -108,6 +108,7 @@ struct HookManifestInner {
     version: Option<String>,
     event: HookEvent,
     #[serde(default)]
+    /// Hook execution priority. Higher number = runs first (descending order). Default: 0.
     priority: i32,
     #[serde(default = "default_enabled")]
     enabled: bool,
@@ -130,6 +131,7 @@ pub struct HookManifest {
     pub version: Option<String>,
     pub event: HookEvent,
     #[serde(default)]
+    /// Hook execution priority. Higher number = runs first (descending order). Default: 0.
     pub priority: i32,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -226,7 +228,11 @@ workdir = "/tmp"
         assert!(m.enabled);
         assert!(!m.skip_security_audit);
         match &m.action {
-            HookAction::Shell { command, timeout_secs, workdir } => {
+            HookAction::Shell {
+                command,
+                timeout_secs,
+                workdir,
+            } => {
                 assert_eq!(command, "echo hello");
                 assert_eq!(*timeout_secs, Some(30));
                 assert_eq!(workdir.as_deref(), Some("/tmp"));
@@ -248,7 +254,12 @@ timeout_secs = 10
         let m = HookManifest::from_toml(toml).unwrap();
         assert_eq!(m.event, HookEvent::OnLlmOutput);
         match &m.action {
-            HookAction::Http { url, method, timeout_secs, .. } => {
+            HookAction::Http {
+                url,
+                method,
+                timeout_secs,
+                ..
+            } => {
                 assert_eq!(url, "https://example.com/webhook");
                 assert_eq!(method.as_deref(), Some("POST"));
                 assert_eq!(*timeout_secs, Some(10));
@@ -349,6 +360,9 @@ command = "echo tick"
     fn display_hook_event() {
         assert_eq!(HookEvent::OnGatewayStart.to_string(), "on_gateway_start");
         assert_eq!(HookEvent::BeforeToolCall.to_string(), "before_tool_call");
-        assert_eq!(HookEvent::OnMessageSending.to_string(), "on_message_sending");
+        assert_eq!(
+            HookEvent::OnMessageSending.to_string(),
+            "on_message_sending"
+        );
     }
 }

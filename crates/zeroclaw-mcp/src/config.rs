@@ -19,14 +19,14 @@ pub struct McpServerConfig {
 }
 
 /// Internal structure for deserializing .mcp.json
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct McpConfigFile {
     #[serde(rename = "mcpServers", default)]
     mcp_servers: HashMap<String, McpServerEntry>,
 }
 
 /// Internal structure for individual server entries
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct McpServerEntry {
     command: String,
     #[serde(default)]
@@ -81,6 +81,41 @@ pub fn load_mcp_configs(workspace_dir: Option<&Path>) -> anyhow::Result<Vec<McpS
     }
 
     Ok(Vec::new())
+}
+
+/// Save MCP server configurations to a .mcp.json file.
+/// Uses atomic write (write to .tmp, then rename) to avoid partial writes.
+pub fn save_mcp_config(
+    path: &Path,
+    servers: &HashMap<String, McpServerConfig>,
+) -> anyhow::Result<()> {
+    // Convert HashMap<String, McpServerConfig> to the .mcp.json format:
+    // {"mcpServers": {"name": {"command": "...", "args": [...], "env": {...}}}}
+    let mut entries = HashMap::with_capacity(servers.len());
+    for (name, config) in servers {
+        entries.insert(
+            name.clone(),
+            McpServerEntry {
+                command: config.command.clone(),
+                args: config.args.clone(),
+                env: config.env.clone(),
+            },
+        );
+    }
+
+    let file = McpConfigFile {
+        mcp_servers: entries,
+    };
+
+    let json = serde_json::to_string_pretty(&file).context("Failed to serialize MCP config")?;
+
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, json.as_bytes())
+        .with_context(|| format!("Failed to write temporary MCP config to {:?}", tmp_path))?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path))?;
+
+    Ok(())
 }
 
 #[cfg(test)]

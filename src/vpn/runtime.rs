@@ -218,8 +218,25 @@ impl ClashRuntime {
             .spawn()
             .with_context(|| format!("failed to spawn clash binary: {}", clash_bin.display()))?;
 
-        // Brief delay to let clash bind the port.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Poll until Clash binds the SOCKS5 port (max 2s).
+        let mut port_ready = false;
+        for _ in 0..20 {
+            match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", listen_port)).await {
+                Ok(_) => {
+                    port_ready = true;
+                    break;
+                }
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+        if !port_ready {
+            bail!(
+                "Clash proxy failed to start: port {} not responding after 2s",
+                listen_port
+            );
+        }
 
         // Verify the process is still alive after startup.
         let mut runtime = Self {

@@ -248,7 +248,9 @@ impl AgentBuilder {
             mcp_pending_configs: self.mcp_pending_configs,
             mcp_generation: u64::MAX,
             mcp_cached_context: String::new(),
-            hook_runner: self.hook_runner.unwrap_or_else(|| Arc::new(crate::hooks::HookRunner::new())),
+            hook_runner: self
+                .hook_runner
+                .unwrap_or_else(|| Arc::new(crate::hooks::HookRunner::new())),
         })
     }
 }
@@ -329,7 +331,7 @@ impl Agent {
             &config.agents,
             config.api_key.as_deref(),
             config,
-            None,  // shared_skills
+            None, // shared_skills
         );
 
         // Wire MCP if enabled
@@ -340,10 +342,10 @@ impl Agent {
             if mcp_json_path.exists() {
                 let builtin_names: std::collections::HashSet<String> =
                     tools.iter().map(|t| t.name().to_string()).collect();
-                let registry = Arc::new(zeroclaw_mcp::registry::McpRegistry::new(
-                    config.mcp.tool_cap,
-                    builtin_names,
-                ));
+                let registry = Arc::new(
+                    zeroclaw_mcp::registry::McpRegistry::new(config.mcp.tool_cap, builtin_names)
+                        .with_config_path(mcp_json_path.clone()),
+                );
 
                 // Parse configs now, connect async on first turn()
                 let pending = match zeroclaw_mcp::config::parse_mcp_config(&mcp_json_path) {
@@ -486,10 +488,11 @@ impl Agent {
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
         let start = Instant::now();
         // Hook: before_tool_call — respect Cancel
-        let (tool_name, tool_args) = match self.hook_runner.run_before_tool_call(
-            call.name.clone(),
-            call.arguments.clone(),
-        ).await {
+        let (tool_name, tool_args) = match self
+            .hook_runner
+            .run_before_tool_call(call.name.clone(), call.arguments.clone())
+            .await
+        {
             crate::hooks::HookResult::Continue(pair) => pair,
             crate::hooks::HookResult::Cancel(reason) => {
                 tracing::info!(
@@ -539,9 +542,14 @@ impl Agent {
             output: result.clone(),
             error: None,
         };
-        if let Err(e) = std::panic::AssertUnwindSafe(
-            self.hook_runner.fire_after_tool_call(&call.name, &tool_result, start.elapsed())
-        ).catch_unwind().await {
+        if let Err(e) = std::panic::AssertUnwindSafe(self.hook_runner.fire_after_tool_call(
+            &call.name,
+            &tool_result,
+            start.elapsed(),
+        ))
+        .catch_unwind()
+        .await
+        {
             tracing::warn!("hook fire_after_tool_call panicked: {:?}", e);
         }
 
@@ -581,13 +589,18 @@ impl Agent {
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
         // Fire session_start hook (void, errors logged internally)
-        let session_id = format!("cli-{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis());
-        if let Err(e) = std::panic::AssertUnwindSafe(
-            self.hook_runner.fire_session_start(&session_id, "cli")
-        ).catch_unwind().await {
+        let session_id = format!(
+            "cli-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+        if let Err(e) =
+            std::panic::AssertUnwindSafe(self.hook_runner.fire_session_start(&session_id, "cli"))
+                .catch_unwind()
+                .await
+        {
             tracing::warn!("hook fire_session_start panicked: {:?}", e);
         }
         // Connect pending MCP servers on first turn (deferred from sync from_config)
@@ -643,10 +656,8 @@ impl Agent {
                     if !resources.is_empty() {
                         mcp_context.push_str("[MCP Resources]\n");
                         for (server, res) in &resources {
-                            let desc = sanitize_mcp_text(
-                                res.description.as_deref().unwrap_or(""),
-                                256,
-                            );
+                            let desc =
+                                sanitize_mcp_text(res.description.as_deref().unwrap_or(""), 256);
                             let server_s = sanitize_mcp_text(server, 256);
                             let uri_s = sanitize_mcp_text(&res.uri, 256);
                             let _ = writeln!(
@@ -659,10 +670,8 @@ impl Agent {
                     if !prompts.is_empty() {
                         mcp_context.push_str("\n[MCP Prompts]\n");
                         for (server, prompt) in &prompts {
-                            let desc = sanitize_mcp_text(
-                                prompt.description.as_deref().unwrap_or(""),
-                                256,
-                            );
+                            let desc =
+                                sanitize_mcp_text(prompt.description.as_deref().unwrap_or(""), 256);
                             let server_s = sanitize_mcp_text(server, 256);
                             let name_s = sanitize_mcp_text(&prompt.name, 256);
                             let _ = writeln!(
@@ -698,14 +707,23 @@ impl Agent {
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             // Hook: before_prompt_build — respect Cancel
-            let system_prompt = match self.hook_runner.run_before_prompt_build(system_prompt).await {
+            let system_prompt = match self
+                .hook_runner
+                .run_before_prompt_build(system_prompt)
+                .await
+            {
                 crate::hooks::HookResult::Continue(p) => p,
                 crate::hooks::HookResult::Cancel(reason) => {
-                    tracing::info!(reason = reason.as_str(), "before_prompt_build cancelled by hook");
+                    tracing::info!(
+                        reason = reason.as_str(),
+                        "before_prompt_build cancelled by hook"
+                    );
                     // Fire session_end before returning
                     let _ = std::panic::AssertUnwindSafe(
-                        self.hook_runner.fire_session_end(&session_id, "cli")
-                    ).catch_unwind().await;
+                        self.hook_runner.fire_session_end(&session_id, "cli"),
+                    )
+                    .catch_unwind()
+                    .await;
                     anyhow::bail!("Turn cancelled by hook: {}", reason);
                 }
             };
@@ -742,13 +760,22 @@ impl Agent {
         for _ in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
             // Hook: before_llm_call — respect Cancel
-            let (messages, hook_model) = match self.hook_runner.run_before_llm_call(messages, effective_model.clone()).await {
+            let (messages, hook_model) = match self
+                .hook_runner
+                .run_before_llm_call(messages, effective_model.clone())
+                .await
+            {
                 crate::hooks::HookResult::Continue(pair) => pair,
                 crate::hooks::HookResult::Cancel(reason) => {
-                    tracing::info!(reason = reason.as_str(), "before_llm_call cancelled by hook");
+                    tracing::info!(
+                        reason = reason.as_str(),
+                        "before_llm_call cancelled by hook"
+                    );
                     let _ = std::panic::AssertUnwindSafe(
-                        self.hook_runner.fire_session_end(&session_id, "cli")
-                    ).catch_unwind().await;
+                        self.hook_runner.fire_session_end(&session_id, "cli"),
+                    )
+                    .catch_unwind()
+                    .await;
                     anyhow::bail!("LLM call cancelled by hook: {}", reason);
                 }
             };
@@ -772,9 +799,11 @@ impl Agent {
                 Err(err) => return Err(err),
             };
             // Hook: fire_llm_output (void, fire-and-forget)
-            if let Err(e) = std::panic::AssertUnwindSafe(
-                self.hook_runner.fire_llm_output(&response)
-            ).catch_unwind().await {
+            if let Err(e) =
+                std::panic::AssertUnwindSafe(self.hook_runner.fire_llm_output(&response))
+                    .catch_unwind()
+                    .await
+            {
                 tracing::warn!("hook fire_llm_output panicked: {:?}", e);
             }
 
@@ -794,8 +823,10 @@ impl Agent {
 
                 // Hook: fire_session_end (void)
                 let _ = std::panic::AssertUnwindSafe(
-                    self.hook_runner.fire_session_end(&session_id, "cli")
-                ).catch_unwind().await;
+                    self.hook_runner.fire_session_end(&session_id, "cli"),
+                )
+                .catch_unwind()
+                .await;
 
                 return Ok(final_text);
             }
@@ -822,9 +853,9 @@ impl Agent {
         }
 
         // Hook: fire_session_end before bail
-        let _ = std::panic::AssertUnwindSafe(
-            self.hook_runner.fire_session_end(&session_id, "cli")
-        ).catch_unwind().await;
+        let _ = std::panic::AssertUnwindSafe(self.hook_runner.fire_session_end(&session_id, "cli"))
+            .catch_unwind()
+            .await;
         anyhow::bail!(
             "Agent exceeded maximum tool iterations ({})",
             self.config.max_tool_iterations

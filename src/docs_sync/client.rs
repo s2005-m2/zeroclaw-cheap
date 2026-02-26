@@ -15,6 +15,12 @@ const DEFAULT_TOKEN_TTL: Duration = Duration::from_secs(7200);
 /// Rate limit for batch_update_blocks: 3 requests per second.
 const BATCH_UPDATE_MIN_INTERVAL: Duration = Duration::from_millis(334);
 
+/// Retry constants following src/providers/reliable.rs pattern.
+const RETRY_MAX_ATTEMPTS: u32 = 3;
+const RETRY_BASE_BACKOFF: Duration = Duration::from_secs(1);
+const RETRY_BACKOFF_CAP: Duration = Duration::from_secs(10);
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
+
 /// A single block update operation for the Feishu Docs API.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BlockUpdate {
@@ -39,7 +45,6 @@ pub struct FeishuDocsClient {
     last_batch_update: Arc<tokio::sync::Mutex<Instant>>,
 }
 
-
 impl FeishuDocsClient {
     /// Create a new Feishu Docs API client.
     pub fn new(app_id: String, app_secret: String) -> Self {
@@ -57,13 +62,23 @@ impl FeishuDocsClient {
 
     /// Get or refresh tenant access token (cached with proactive refresh).
     async fn get_token(&self) -> Result<String> {
-        // Check cache first
+        // Fast path: read lock
         {
             let cached = self.token.read().await;
             if let Some(ref t) = *cached {
                 if Instant::now() < t.refresh_after {
                     return Ok(t.value.clone());
                 }
+            }
+        }
+
+        // Slow path: write lock with double-checked locking
+        let mut cached = self.token.write().await;
+
+        // Re-check: another caller may have refreshed while we waited for the write lock
+        if let Some(ref t) = *cached {
+            if Instant::now() < t.refresh_after {
+                return Ok(t.value.clone());
             }
         }
 
@@ -83,7 +98,10 @@ impl FeishuDocsClient {
 
         let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
         if code != 0 {
-            let msg = data.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
             bail!("Feishu tenant_access_token failed: {msg}");
         }
 
@@ -99,27 +117,94 @@ impl FeishuDocsClient {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TOKEN_TTL.as_secs());
         let ttl = Duration::from_secs(ttl_secs.max(1));
-        let refresh_in = ttl.checked_sub(TOKEN_REFRESH_SKEW).unwrap_or(Duration::from_secs(1));
+        let refresh_in = ttl
+            .checked_sub(TOKEN_REFRESH_SKEW)
+            .unwrap_or(Duration::from_secs(1));
 
-        {
-            let mut cached = self.token.write().await;
-            *cached = Some(CachedToken {
-                value: token_value.clone(),
-                refresh_after: Instant::now() + refresh_in,
-            });
-        }
+        *cached = Some(CachedToken {
+            value: token_value.clone(),
+            refresh_after: Instant::now() + refresh_in,
+        });
 
         Ok(token_value)
+    }
+
+    /// Send an HTTP request with retry and exponential backoff.
+    /// Retries on 429 (with Retry-After parsing), 5xx, and network errors.
+    /// Non-retryable 4xx (except 429) are returned immediately.
+    async fn send_with_retry<F>(&self, build_request: F) -> Result<reqwest::Response>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        let mut backoff = RETRY_BASE_BACKOFF;
+        let mut last_err: Option<anyhow::Error> = None;
+
+        for attempt in 0..=RETRY_MAX_ATTEMPTS {
+            let resp = match build_request().send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if attempt == RETRY_MAX_ATTEMPTS {
+                        return Err(e.into());
+                    }
+                    tracing::warn!(attempt, "Feishu request failed (network): {e}, retrying");
+                    last_err = Some(anyhow::Error::from(e));
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(RETRY_BACKOFF_CAP);
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+
+            // Success — return immediately
+            if status.is_success() {
+                return Ok(resp);
+            }
+
+            // Non-retryable 4xx (except 429) — let caller handle
+            if status.is_client_error() && status.as_u16() != 429 {
+                return Ok(resp);
+            }
+
+            // Last attempt — return as-is
+            if attempt == RETRY_MAX_ATTEMPTS {
+                return Ok(resp);
+            }
+
+            // 429: parse Retry-After header; 5xx: use exponential backoff
+            let wait = if status.as_u16() == 429 {
+                resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|secs| Duration::from_secs_f64(secs.max(0.0)).min(RETRY_AFTER_CAP))
+                    .unwrap_or(backoff)
+            } else {
+                backoff
+            };
+
+            tracing::warn!(
+                attempt,
+                status = %status,
+                wait_ms = wait.as_millis() as u64,
+                "Feishu request failed, retrying"
+            );
+            tokio::time::sleep(wait).await;
+            backoff = (backoff * 2).min(RETRY_BACKOFF_CAP);
+        }
+
+        match last_err {
+            Some(e) => Err(e),
+            None => bail!("Feishu request failed after retries"),
+        }
     }
 
     /// GET /docx/v1/documents/{id}/raw_content — fetch raw document text.
     pub async fn get_raw_content(&self, document_id: &str) -> Result<String> {
         let token = self.get_token().await?;
         let url = format!("{FEISHU_BASE_URL}/docx/v1/documents/{document_id}/raw_content");
-        let resp = self.http
-            .get(&url)
-            .bearer_auth(&token)
-            .send()
+        let resp = self
+            .send_with_retry(|| self.http.get(&url).bearer_auth(&token))
             .await?;
         let status = resp.status();
         let data: serde_json::Value = resp.json().await?;
@@ -128,7 +213,10 @@ impl FeishuDocsClient {
         }
         let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
         if code != 0 {
-            let msg = data.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
             bail!("Feishu get_raw_content error: {msg}");
         }
         let content = data
@@ -158,15 +246,10 @@ impl FeishuDocsClient {
             *last = Instant::now();
         }
         let token = self.get_token().await?;
-        let url = format!(
-            "{FEISHU_BASE_URL}/docx/v1/documents/{document_id}/blocks/batch_update"
-        );
+        let url = format!("{FEISHU_BASE_URL}/docx/v1/documents/{document_id}/blocks/batch_update");
         let body = serde_json::json!({ "requests": updates });
-        let resp = self.http
-            .patch(&url)
-            .bearer_auth(&token)
-            .json(&body)
-            .send()
+        let resp = self
+            .send_with_retry(|| self.http.patch(&url).bearer_auth(&token).json(&body))
             .await?;
         let status = resp.status();
         let data: serde_json::Value = resp.json().await?;
@@ -175,7 +258,10 @@ impl FeishuDocsClient {
         }
         let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
         if code != 0 {
-            let msg = data.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
             bail!("Feishu batch_update_blocks error: {msg}");
         }
         Ok(())
@@ -185,11 +271,8 @@ impl FeishuDocsClient {
         let token = self.get_token().await?;
         let url = format!("{FEISHU_BASE_URL}/docx/v1/documents");
         let body = serde_json::json!({ "title": title });
-        let resp = self.http
-            .post(&url)
-            .bearer_auth(&token)
-            .json(&body)
-            .send()
+        let resp = self
+            .send_with_retry(|| self.http.post(&url).bearer_auth(&token).json(&body))
             .await?;
         let status = resp.status();
         let data: serde_json::Value = resp.json().await?;
@@ -198,7 +281,10 @@ impl FeishuDocsClient {
         }
         let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
         if code != 0 {
-            let msg = data.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
             bail!("Feishu create_document error: {msg}");
         }
         let doc_id = data

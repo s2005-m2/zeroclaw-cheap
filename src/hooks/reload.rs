@@ -58,8 +58,8 @@ pub fn delete_reload_stamp(workspace_dir: &Path) -> Result<()> {
 /// build handlers, and atomically swap them on the runner.
 ///
 /// Called after `check_reload_stamp` returns `true`. Wraps the reload in a
-/// 5-second timeout. On any error the stamp is deleted to prevent a retry
-/// loop, and message processing continues unblocked.
+/// 5-second timeout. Stamp is deleted only on success; preserved on failure
+/// to allow retry next cycle.
 pub async fn do_reload_hooks(
     workspace_dir: &Path,
     hooks_config: &crate::config::schema::HooksConfig,
@@ -81,6 +81,10 @@ pub async fn do_reload_hooks(
     match result {
         Ok(Ok(())) => {
             tracing::info!("Dynamic hooks reloaded successfully");
+            // Delete stamp on success; preserve on failure to allow retry next cycle.
+            if let Err(err) = delete_reload_stamp(workspace_dir) {
+                warn!("Failed to delete hooks reload stamp: {err}");
+            }
         }
         Ok(Err(err)) => {
             warn!("Failed to reload dynamic hooks: {err}");
@@ -88,11 +92,6 @@ pub async fn do_reload_hooks(
         Err(_elapsed) => {
             warn!("Dynamic hooks reload timed out (5s limit)");
         }
-    }
-
-    // Always delete stamp after attempt to prevent retry loops.
-    if let Err(err) = delete_reload_stamp(workspace_dir) {
-        warn!("Failed to delete hooks reload stamp: {err}");
     }
 }
 
@@ -106,8 +105,9 @@ async fn reload_dynamic_hooks_inner(
         .into_iter()
         .map(|hook| {
             let timeout = hooks_config.default_timeout_secs;
-            Box::new(crate::hooks::dynamic::DynamicHookHandler::new(hook, timeout))
-                as Box<dyn crate::hooks::traits::HookHandler>
+            Box::new(crate::hooks::dynamic::DynamicHookHandler::new(
+                hook, timeout,
+            )) as Box<dyn crate::hooks::traits::HookHandler>
         })
         .collect();
     hook_runner.reload_dynamic_hooks(handlers).await;

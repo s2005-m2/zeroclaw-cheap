@@ -9,12 +9,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::client::McpClient;
 use crate::config::McpServerConfig;
 use crate::transport::StdioTransport;
 use crate::types::{McpPrompt, McpResource, McpToolCallResult, McpToolInfo};
+
+/// Default timeout for MCP tool calls (30 seconds per MCP spec recommendation).
+const DEFAULT_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Internal state for a connected MCP server
 struct McpServerState {
@@ -30,6 +33,7 @@ pub struct McpRegistry {
     tool_cap: usize,
     builtin_tool_names: HashSet<String>,
     generation: AtomicU64,
+    config_path: Option<std::path::PathBuf>,
 }
 
 impl McpRegistry {
@@ -44,6 +48,27 @@ impl McpRegistry {
             tool_cap,
             builtin_tool_names,
             generation: AtomicU64::new(0),
+            config_path: None,
+        }
+    }
+
+    /// Set the config file path for persistence
+    pub fn with_config_path(mut self, path: std::path::PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
+    }
+
+    /// Persist current server configs to disk if config_path is set.
+    /// Logs a warning on failure but does not propagate the error.
+    fn persist_config(&self, servers: &HashMap<String, McpServerState>) {
+        if let Some(ref path) = self.config_path {
+            let configs: HashMap<String, McpServerConfig> = servers
+                .iter()
+                .map(|(name, state)| (name.clone(), state.config.clone()))
+                .collect();
+            if let Err(e) = crate::config::save_mcp_config(path, &configs) {
+                warn!("Failed to persist MCP config: {}", e);
+            }
         }
     }
 
@@ -98,14 +123,24 @@ impl McpRegistry {
         );
 
         if let Err(e) = self.validate_tools(&tools, &server_name).await {
-            let _ = client.close().await;
+            if let Err(e) = client.close().await {
+                warn!(
+                    "Failed to close MCP client for server '{}': {e}",
+                    server_name
+                );
+            }
             return Err(e);
         }
 
         let mut servers = self.servers.write().await;
         let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
         if current_tool_count + tools.len() > self.tool_cap {
-            let _ = client.close().await;
+            if let Err(e) = client.close().await {
+                warn!(
+                    "Failed to close MCP client for server '{}': {e}",
+                    server_name
+                );
+            }
             anyhow::bail!(
                 "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
                 server_name,
@@ -113,6 +148,19 @@ impl McpRegistry {
                 current_tool_count,
                 tools.len(),
                 self.tool_cap
+            );
+        }
+
+        if servers.contains_key(&server_name) {
+            if let Err(e) = client.close().await {
+                warn!(
+                    "Failed to close MCP client for server '{}': {e}",
+                    server_name
+                );
+            }
+            anyhow::bail!(
+                "MCP server '{}' already exists. Please use a different name or remove the existing server first.",
+                server_name
             );
         }
 
@@ -132,6 +180,8 @@ impl McpRegistry {
             tools.len()
         );
 
+        self.persist_config(&servers);
+
         Ok(tools)
     }
 
@@ -149,13 +199,17 @@ impl McpRegistry {
             .with_context(|| format!("Failed to list tools from MCP server '{}'", name))?;
         debug!("MCP server '{}' advertised {} tools", name, tools.len());
         if let Err(e) = self.validate_tools(&tools, &name).await {
-            let _ = client.close().await;
+            if let Err(e) = client.close().await {
+                warn!("Failed to close MCP client for server '{}': {e}", name);
+            }
             return Err(e);
         }
         let mut servers = self.servers.write().await;
         let current_tool_count = servers.values().map(|s| s.tools.len()).sum::<usize>();
         if current_tool_count + tools.len() > self.tool_cap {
-            let _ = client.close().await;
+            if let Err(e) = client.close().await {
+                warn!("Failed to close MCP client for server '{}': {e}", name);
+            }
             anyhow::bail!(
                 "Adding server '{}' would exceed tool cap ({}). Current: {}, New: {}, Cap: {}",
                 name,
@@ -242,6 +296,7 @@ impl McpRegistry {
             .remove(name)
             .with_context(|| format!("MCP server '{}' not found", name))?;
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.persist_config(&servers);
 
         server
             .client
@@ -249,7 +304,7 @@ impl McpRegistry {
             .await
             .close()
             .await
-            .with_context(|| format!("Failed to close MCP server '{}'", name))?;
+            .with_context(|| format!("Failed to cleanly close MCP server '{}'. Server removed from registry but process may still be running.", name))?;
 
         info!("MCP server '{}' removed successfully", name);
         Ok(())
@@ -314,12 +369,21 @@ impl McpRegistry {
         }; // read lock released here
 
         let mut client = client.lock().await;
-        client.call_tool(tool_name, args).await.with_context(|| {
-            format!(
-                "Failed to call tool '{}' on server '{}'",
-                tool_name, server_name
-            )
-        })
+
+        match tokio::time::timeout(DEFAULT_TOOL_CALL_TIMEOUT, client.call_tool(tool_name, args)).await {
+            Ok(result) => result.with_context(|| {
+                format!(
+                    "MCP server '{}' failed while calling tool '{}'. The server may have crashed or disconnected. Remove and re-add it to reconnect.",
+                    server_name, tool_name
+                )
+            }),
+            Err(_elapsed) => {
+                anyhow::bail!(
+                    "MCP tool call '{}' on server '{}' timed out after {:?}. The server may be unresponsive.",
+                    tool_name, server_name, DEFAULT_TOOL_CALL_TIMEOUT
+                )
+            }
+        }
     }
 
     /// Get all resources from all connected servers
