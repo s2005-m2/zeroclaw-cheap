@@ -4,7 +4,6 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use zeroclaw_mcp::config::McpServerConfig;
 use zeroclaw_mcp::registry::McpRegistry;
@@ -14,19 +13,16 @@ use crate::security::policy::AutonomyLevel;
 pub struct McpManageTool {
     registry: Arc<McpRegistry>,
     autonomy_level: AutonomyLevel,
-    config_path: PathBuf,
 }
 
 impl McpManageTool {
     pub fn new(
         registry: Arc<McpRegistry>,
         autonomy_level: AutonomyLevel,
-        config_path: PathBuf,
     ) -> Self {
         Self {
             registry,
             autonomy_level,
-            config_path,
         }
     }
 }

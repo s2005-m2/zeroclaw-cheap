@@ -255,6 +255,12 @@ impl AgentBuilder {
     }
 }
 
+/// Unique sentinel used to delimit MCP context inside the system prompt.
+/// Chosen to be unlikely to appear in natural MCP content; the sanitizer
+/// strips it from MCP-sourced text to prevent spoofing.
+const MCP_CONTEXT_SENTINEL: &str = "\n<!-- zeroclaw:mcp-context-begin -->\n";
+const MCP_CONTEXT_SENTINEL_END: &str = "\n<!-- zeroclaw:mcp-context-end -->\n";
+
 /// Sanitize MCP-sourced text to prevent prompt injection.
 /// Truncates to `max_len` chars, strips control characters,
 /// and neutralizes system prompt boundary markers.
@@ -273,7 +279,11 @@ fn sanitize_mcp_text(s: &str, max_len: usize) -> String {
         .collect();
     // Neutralize system prompt boundary markers
     let re = Regex::new(r"(?i)(\[/?system\]|</?system>)").unwrap();
-    re.replace_all(&cleaned, "[SANITIZED]").into_owned()
+    let cleaned = re.replace_all(&cleaned, "[SANITIZED]").into_owned();
+    // Strip MCP context sentinels so MCP content cannot spoof delimiters
+    cleaned
+        .replace("zeroclaw:mcp-context-begin", "")
+        .replace("zeroclaw:mcp-context-end", "")
 }
 
 impl Agent {
@@ -652,7 +662,7 @@ impl Agent {
                 let prompts = registry.get_all_prompts().await;
                 let mut mcp_context = String::new();
                 if !resources.is_empty() || !prompts.is_empty() {
-                    mcp_context.push_str("\n```\n");
+                    mcp_context.push_str(MCP_CONTEXT_SENTINEL);
                     if !resources.is_empty() {
                         mcp_context.push_str("[MCP Resources]\n");
                         for (server, res) in &resources {
@@ -681,20 +691,14 @@ impl Agent {
                             );
                         }
                     }
-                    mcp_context.push_str("```\n");
+                    mcp_context.push_str(MCP_CONTEXT_SENTINEL_END);
                 }
                 self.mcp_cached_context = mcp_context;
             }
             if let Some(ConversationMessage::Chat(sys_msg)) = self.history.first_mut() {
                 if sys_msg.role == "system" {
-                    // Strip previous MCP context to prevent accumulation across turns
-                    if let Some(start) = sys_msg
-                        .content
-                        .find("\n```\n[MCP Resources]")
-                        .or_else(|| sys_msg.content.find("\n```\n[MCP Prompts]"))
-                        .or_else(|| sys_msg.content.find("\n[MCP Resources]\n"))
-                        .or_else(|| sys_msg.content.find("\n[MCP Prompts]\n"))
-                    {
+                    // Strip previous MCP context using unique sentinel markers
+                    if let Some(start) = sys_msg.content.find(MCP_CONTEXT_SENTINEL) {
                         sys_msg.content.truncate(start);
                     }
                     if !self.mcp_cached_context.is_empty() {

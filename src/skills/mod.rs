@@ -386,23 +386,33 @@ fn clone_open_skills_repo(repo_dir: &Path) -> bool {
         }
     }
 
-    let output = Command::new("git")
-        .args(["clone", "--depth", "1", OPEN_SKILLS_REPO_URL])
-        .arg(repo_dir)
-        .output();
+    // Run git clone on a dedicated OS thread to avoid blocking the tokio runtime
+    // when this function is called from an async context.
+    let repo_dir_owned = repo_dir.to_path_buf();
+    let result = std::thread::spawn(move || {
+        Command::new("git")
+            .args(["clone", "--depth", "1", OPEN_SKILLS_REPO_URL])
+            .arg(&repo_dir_owned)
+            .output()
+    })
+    .join();
 
-    match output {
-        Ok(result) if result.status.success() => {
+    match result {
+        Ok(Ok(output)) if output.status.success() => {
             tracing::info!("initialized open-skills at {}", repo_dir.display());
             true
         }
-        Ok(result) => {
-            let stderr = String::from_utf8_lossy(&result.stderr);
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("failed to clone open-skills: {stderr}");
             false
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             tracing::warn!("failed to run git clone for open-skills: {err}");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("git clone thread panicked for open-skills");
             false
         }
     }
@@ -413,22 +423,30 @@ fn pull_open_skills_repo(repo_dir: &Path) -> bool {
     if !repo_dir.join(".git").exists() {
         return true;
     }
-
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
-        .args(["pull", "--ff-only"])
-        .output();
-
-    match output {
-        Ok(result) if result.status.success() => true,
-        Ok(result) => {
-            let stderr = String::from_utf8_lossy(&result.stderr);
+    // Run git pull on a dedicated OS thread to avoid blocking the tokio runtime
+    // when this function is called from an async context.
+    let repo_dir = repo_dir.to_path_buf();
+    let result = std::thread::spawn(move || {
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo_dir)
+            .args(["pull", "--ff-only"])
+            .output()
+    })
+    .join();
+    match result {
+        Ok(Ok(output)) if output.status.success() => true,
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("failed to pull open-skills updates: {stderr}");
             false
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             tracing::warn!("failed to run git pull for open-skills: {err}");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("git pull thread panicked for open-skills");
             false
         }
     }
@@ -771,7 +789,6 @@ fn enforce_skill_security_audit(
         // Return a clean report without actually auditing
         return Ok(audit::SkillAuditReport::default());
     }
-    let _report = audit::audit_skill_directory(skill_path)?;
     let report = audit::audit_skill_directory(skill_path)?;
     if report.is_clean() {
         return Ok(report);
