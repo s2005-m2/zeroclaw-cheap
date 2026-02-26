@@ -176,16 +176,33 @@ if [[ "$SKIP_BROWSER" == false ]]; then
     command -v node &>/dev/null || err "Node.js installation failed"
   fi
 
-  info "Installing agent-browser via China npm mirror ($NPM_MIRROR)..."
-  npm install -g agent-browser --registry="$NPM_MIRROR" \
-    || err "Failed to install agent-browser"
+  if command -v agent-browser &>/dev/null; then
+    info "agent-browser already installed, skipping"
+  else
+    info "Installing agent-browser via China npm mirror ($NPM_MIRROR)..."
+    npm install -g agent-browser --registry="$NPM_MIRROR" \
+      || err "Failed to install agent-browser"
+  fi
 
-  info "Installing Playwright Chromium via China mirror..."
-  # Use Playwright's own install command with PLAYWRIGHT_DOWNLOAD_HOST for China mirror.
-  # This ensures correct revision, directory structure, and INSTALLATION_COMPLETE marker.
-  PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright" \
-    npx --registry="$NPM_MIRROR" playwright install chromium \
-    || err "Failed to install Playwright Chromium (tried npmmirror mirror)"
+  # Check if Playwright Chromium is already installed via INSTALLATION_COMPLETE marker.
+  # Playwright stores browsers under ~/.cache/ms-playwright/chromium-*/.
+  PW_CHROMIUM_INSTALLED=false
+  for d in "$HOME/.cache/ms-playwright"/chromium-*/; do
+    if [[ -f "${d}INSTALLATION_COMPLETE" ]]; then
+      PW_CHROMIUM_INSTALLED=true
+      break
+    fi
+  done
+  if [[ "$PW_CHROMIUM_INSTALLED" == true ]]; then
+    info "Playwright Chromium already installed, skipping"
+  else
+    info "Installing Playwright Chromium via China mirror..."
+    # Use Playwright's own install command with PLAYWRIGHT_DOWNLOAD_HOST for China mirror.
+    # This ensures correct revision, directory structure, and INSTALLATION_COMPLETE marker.
+    PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright" \
+      npx --registry="$NPM_MIRROR" playwright install chromium \
+      || err "Failed to install Playwright Chromium (tried npmmirror mirror)"
+  fi
 
   # Install Playwright system dependencies (fonts, libs) on Linux
   if [[ "$(uname)" == "Linux" ]]; then
