@@ -150,6 +150,20 @@ pub fn sync_local_to_remote(
     }
     Ok(serialize_to_code_blocks(&files))
 }
+/// Read a single local file's content for upload to its own Feishu document.
+/// Returns `None` if the file is missing or a symlink.
+pub fn read_single_file(filename: &str, workspace: &Path) -> Result<Option<String>> {
+    let source = workspace.join(filename);
+    if source.is_symlink() {
+        tracing::warn!("docs_sync: skipping symlink '{filename}'");
+        return Ok(None);
+    }
+    if !source.exists() {
+        tracing::debug!("docs_sync: file '{filename}' does not exist");
+        return Ok(None);
+    }
+    Ok(Some(std::fs::read_to_string(&source)?))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,7 +208,7 @@ mod tests {
         assert_eq!(config.sync_files.len(), 5);
         assert_eq!(config.sync_interval_secs, 60);
         assert!(config.document_id.is_empty());
-        assert!(!config.auto_create_doc);
+        assert!(config.document_ids.is_empty());
         assert_eq!(config.remote_mode, crate::config::schema::RemoteSyncMode::Polling);
         assert!(config.app_id.is_none());
         assert!(config.app_secret.is_none());
@@ -235,4 +249,18 @@ mod tests {
         assert!(config.app_secret.is_none());
         assert!(config.encrypt_key.is_none());
     }
+    #[test]
+    fn test_read_single_file_returns_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("IDENTITY.md"), "# Hello").unwrap();
+        let result = read_single_file("IDENTITY.md", tmp.path()).unwrap();
+        assert_eq!(result, Some("# Hello".to_string()));
+    }
+    #[test]
+    fn test_read_single_file_missing_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = read_single_file("NOPE.md", tmp.path()).unwrap();
+        assert_eq!(result, None);
 }
+}
+

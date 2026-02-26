@@ -502,15 +502,16 @@ pub struct DocsSyncConfig {
     /// Feishu document ID to sync with.
     #[serde(default)]
     pub document_id: String,
+    /// Per-file Feishu document ID mapping (filename → document_id).
+    /// Newly created document IDs are persisted to the lock file.
+    #[serde(default)]
+    pub document_ids: std::collections::HashMap<String, String>,
     /// List of local files to sync (relative to workspace).
     #[serde(default = "default_sync_files")]
     pub sync_files: Vec<String>,
     /// Sync polling interval in seconds. Default: 60.
     #[serde(default = "default_sync_interval_secs")]
     pub sync_interval_secs: u64,
-    /// Automatically create a Feishu document if document_id is empty.
-    #[serde(default)]
-    pub auto_create_doc: bool,
     /// How to receive remote changes: "polling" (default) or "event" (WebSocket subscription).
     #[serde(default)]
     pub remote_mode: RemoteSyncMode,
@@ -530,9 +531,9 @@ impl Default for DocsSyncConfig {
         Self {
             enabled: false,
             document_id: String::new(),
+            document_ids: std::collections::HashMap::new(),
             sync_files: default_sync_files(),
             sync_interval_secs: default_sync_interval_secs(),
-            auto_create_doc: false,
             remote_mode: RemoteSyncMode::default(),
             app_id: None,
             app_secret: None,

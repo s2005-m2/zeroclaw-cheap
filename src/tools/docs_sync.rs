@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
+use sha2::{Digest, Sha256};
 
 pub struct DocsSyncTool {
     config: Arc<Config>,
@@ -99,7 +100,6 @@ impl DocsSyncTool {
             "document_id": ds.document_id,
             "remote_mode": format!("{:?}", ds.remote_mode),
             "sync_interval_secs": ds.sync_interval_secs,
-            "auto_create_doc": ds.auto_create_doc,
             "sync_files": ds.sync_files,
             "has_app_id": ds.app_id.is_some(),
             "has_app_secret": ds.app_secret.is_some(),
@@ -199,11 +199,11 @@ impl DocsSyncTool {
                 error: Some("Docs sync is disabled.".into()),
             });
         }
-        if ds.document_id.is_empty() {
+        if ds.document_ids.is_empty() {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some("No document_id configured.".into()),
+                error: Some("No document_ids configured.".into()),
             });
         }
         let app_id = ds.app_id.clone()
@@ -220,53 +220,31 @@ impl DocsSyncTool {
                 error: Some("No app_id/app_secret found in [docs_sync] or [channels_config.feishu].".into()),
             }),
         };
-        let content = crate::docs_sync::sync_local_to_remote(
-            &ds.sync_files,
-            &self.workspace_dir,
-        )?;
         let client = crate::docs_sync::FeishuDocsClient::new(app_id, app_secret);
-        let byte_len = content.len();
-        tracing::info!("docs_sync push: {byte_len} bytes to doc {}", ds.document_id);
-
-        // Find the first code block in the document to update.
-        let blocks = client.get_document_blocks(&ds.document_id).await.map_err(|e| {
-            anyhow::anyhow!("Failed to list document blocks: {e}")
-        })?;
-        // block_type 14 = Code in Feishu Docs API
-        let code_block = blocks.iter().find(|(_, bt)| *bt == 14);
-        let target_block_id = match code_block {
-            Some((id, _)) => id.clone(),
-            None => {
-                // No code block found — use the document (page) block itself.
-                // block_type 1 = Page
-                blocks.iter()
-                    .find(|(_, bt)| *bt == 1)
-                    .map(|(id, _)| id.clone())
-                    .unwrap_or_else(|| ds.document_id.clone())
-            }
-        };
-
-        let update = crate::docs_sync::client::BlockUpdate {
-            block_id: target_block_id,
-            update_text_elements: serde_json::json!({
-                "elements": [{
-                    "text_run": {
-                        "content": content,
-                    }
-                }]
-            }),
-        };
-        client.batch_update_blocks(&ds.document_id, &[update]).await.map_err(|e| {
-            anyhow::anyhow!("Failed to push to Feishu document: {e}")
-        })?;
-
+        let mut pushed = Vec::new();
+        for (filename, doc_id) in &ds.document_ids {
+            let content = match crate::docs_sync::sync::read_single_file(filename, &self.workspace_dir)? {
+                Some(c) => c,
+                None => continue,
+            };
+            let blocks = client.get_document_blocks(doc_id).await?;
+            let target_block_id = blocks.iter()
+                .find(|(_, bt)| *bt == 14)
+                .or_else(|| blocks.iter().find(|(_, bt)| *bt == 1))
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| doc_id.clone());
+            let update = crate::docs_sync::client::BlockUpdate {
+                block_id: target_block_id,
+                update_text_elements: serde_json::json!({
+                    "elements": [{ "text_run": { "content": content } }]
+                }),
+            };
+            client.batch_update_blocks(doc_id, &[update]).await?;
+            pushed.push(filename.as_str());
+        }
         Ok(ToolResult {
             success: true,
-            output: format!(
-                "Pushed {byte_len} bytes from {} file(s) to document {}.",
-                ds.sync_files.len(),
-                ds.document_id,
-            ),
+            output: format!("Pushed {} file(s): {}", pushed.len(), pushed.join(", ")),
             error: None,
         })
     }
@@ -276,16 +254,14 @@ impl DocsSyncTool {
         }
         if !ds.enabled {
             return Ok(ToolResult {
-                success: false,
-                output: String::new(),
+                success: false, output: String::new(),
                 error: Some("Docs sync is disabled.".into()),
             });
         }
-        if ds.document_id.is_empty() {
+        if ds.document_ids.is_empty() {
             return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("No document_id configured.".into()),
+                success: false, output: String::new(),
+                error: Some("No document_ids configured.".into()),
             });
         }
         let app_id = ds.app_id.clone()
@@ -297,28 +273,61 @@ impl DocsSyncTool {
         let (app_id, app_secret) = match (app_id, app_secret) {
             (Some(id), Some(secret)) => (id, secret),
             _ => return Ok(ToolResult {
-                success: false,
-                output: String::new(),
+                success: false, output: String::new(),
                 error: Some("No app_id/app_secret found.".into()),
             }),
         };
         let client = crate::docs_sync::FeishuDocsClient::new(app_id, app_secret);
-        let remote_content = client.get_raw_content(&ds.document_id).await?;
-        let updated = crate::docs_sync::sync_remote_to_local(
-            &remote_content,
-            &ds.sync_files,
-            &self.workspace_dir,
-        )?;
+        // Load lock file for hash dedup and to register newly pulled files
+        let lock_path = self.config.config_path.parent()
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
+            .join("docs_sync.lock");
+        let mut lock: std::collections::HashMap<String, serde_json::Value> =
+            std::fs::read_to_string(&lock_path).ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+        let mut updated = Vec::new();
+        for (filename, doc_id) in &ds.document_ids {
+            let raw = client.get_raw_content(doc_id).await?;
+            let target = self.workspace_dir.join(filename);
+            // Reject symlinks but allow pulling new files (agent-initiated pull)
+            if target.is_symlink() { continue; }
+            if filename == "config.toml" {
+                crate::docs_sync::sync::validate_remote_config(&raw)?;
+            }
+            // Hash check: skip if content unchanged
+            let mut hasher = Sha256::new();
+            hasher.update(raw.as_bytes());
+            let hash = format!("{:x}", hasher.finalize());
+            if let Some(entry) = lock.get(filename) {
+                if entry.get("hash").and_then(|v| v.as_str()) == Some(&hash) {
+                    continue;
+                }
+            }
+            // Create parent dir if needed (for new files)
+            if let Some(parent) = target.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            std::fs::write(&target, &raw)?;
+            // Update lock entry
+            lock.insert(filename.clone(), json!({
+                "doc_id": doc_id,
+                "hash": hash,
+            }));
+            updated.push(filename.as_str());
+        }
+        // Persist lock
+        if !updated.is_empty() {
+            let _ = std::fs::write(&lock_path, serde_json::to_string_pretty(&lock).unwrap_or_default());
+        }
         if updated.is_empty() {
-            Ok(ToolResult {
-                success: true,
-                output: "Pull complete. No files were updated (already in sync).".into(),
-                error: None,
-            })
+            Ok(ToolResult { success: true, output: "Pull complete. No files updated.".into(), error: None })
         } else {
             Ok(ToolResult {
                 success: true,
-                output: format!("Pull complete. Updated files: {}", updated.join(", ")),
+                output: format!("Pull complete. Updated: {}", updated.join(", ")),
                 error: None,
             })
         }
