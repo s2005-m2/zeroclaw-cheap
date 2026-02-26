@@ -14,7 +14,7 @@ const FEISHU_BASE_URL: &str = "https://open.feishu.cn/open-apis";
 const FEISHU_WS_BASE_URL: &str = "https://open.feishu.cn";
 const LARK_BASE_URL: &str = "https://open.larksuite.com/open-apis";
 const LARK_WS_BASE_URL: &str = "https://open.larksuite.com";
-const ACK_REACTION_EMOJI_TYPE: &str = "THUMBSUP";
+const ACK_REACTION_EMOJI_TYPE: &str = "MUSCLE";
 const LARK_MAX_FILE_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 const LARK_MAX_FILE_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 
