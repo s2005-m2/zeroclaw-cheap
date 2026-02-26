@@ -13,7 +13,7 @@ pub use schema::{
     IdentityConfig, LarkConfig, MatrixConfig, McpConfig, MemoryConfig, ModelRouteConfig,
     MultimodalConfig, NextcloudTalkConfig, ObservabilityConfig, OtpConfig, PeripheralBoardConfig,
     PeripheralsConfig, ProxyConfig, ProxyScope, QueryClassificationConfig, ReliabilityConfig,
-    ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig,
+    RemoteSyncMode, ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig,
     SecretsConfig, SecurityConfig, SkillsConfig, SkillsPromptInjectionMode, SlackConfig,
     StorageConfig, StorageProviderConfig, StorageProviderSection, StreamMode, TelegramConfig,
     TranscriptionConfig, TunnelConfig, VpnConfig, WebSearchConfig, WebhookConfig,

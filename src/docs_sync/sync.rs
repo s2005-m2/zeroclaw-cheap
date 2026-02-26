@@ -195,5 +195,44 @@ mod tests {
         assert_eq!(config.sync_interval_secs, 60);
         assert!(config.document_id.is_empty());
         assert!(!config.auto_create_doc);
+        assert_eq!(config.remote_mode, crate::config::schema::RemoteSyncMode::Polling);
+        assert!(config.app_id.is_none());
+        assert!(config.app_secret.is_none());
+        assert!(config.encrypt_key.is_none());
+    }
+    #[test]
+    fn test_remote_sync_mode_serde() {
+        use crate::config::schema::RemoteSyncMode;
+        let polling: RemoteSyncMode = serde_json::from_str("\"polling\"").unwrap();
+        assert_eq!(polling, RemoteSyncMode::Polling);
+        let event: RemoteSyncMode = serde_json::from_str("\"event\"").unwrap();
+        assert_eq!(event, RemoteSyncMode::Event);
+    }
+    #[test]
+    fn test_docs_sync_config_with_event_mode() {
+        let json = r#"{
+            "enabled": true,
+            "document_id": "doxcn123",
+            "remote_mode": "event",
+            "app_id": "cli_test",
+            "app_secret": "secret_test",
+            "encrypt_key": "enc_key"
+        }"#;
+        let config: crate::config::schema::DocsSyncConfig = serde_json::from_str(json).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.document_id, "doxcn123");
+        assert_eq!(config.remote_mode, crate::config::schema::RemoteSyncMode::Event);
+        assert_eq!(config.app_id.as_deref(), Some("cli_test"));
+        assert_eq!(config.app_secret.as_deref(), Some("secret_test"));
+        assert_eq!(config.encrypt_key.as_deref(), Some("enc_key"));
+    }
+    #[test]
+    fn test_docs_sync_config_defaults_to_polling() {
+        let json = r#"{ "enabled": true, "document_id": "doxcn456" }"#;
+        let config: crate::config::schema::DocsSyncConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.remote_mode, crate::config::schema::RemoteSyncMode::Polling);
+        assert!(config.app_id.is_none());
+        assert!(config.app_secret.is_none());
+        assert!(config.encrypt_key.is_none());
     }
 }

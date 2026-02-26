@@ -231,7 +231,7 @@ whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-pr
 # vpn = Embedded VPN proxy via external clash process + subconverter
 vpn = ["dep:subconverter"]
 # feishu-docs-sync = Bidirectional sync between local config files and Feishu Docs
-feishu-docs-sync = ["dep:notify"]
+feishu-docs-sync = ["dep:notify", "dep:prost"]
 
 [profile.release]
 opt-level = "z"      # Optimize for size

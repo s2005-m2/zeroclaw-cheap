@@ -84,13 +84,31 @@ document_id = "doxcnXXXXXXXXXXXXXX"
 # Files to sync (relative to workspace). Default list shown below.
 sync_files = ["config.toml", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]
 
+# How to receive remote changes: "polling" (default) or "event" (WebSocket subscription).
+# - polling: fetch the document every sync_interval_secs seconds.
+# - event: subscribe to drive.file.edit_v1 via Feishu WebSocket long-connection (near-real-time).
+remote_mode = "polling"
+
 # Polling interval for remote changes, in seconds. Default: 60.
+# Used as the polling interval when remote_mode = "polling".
+# When remote_mode = "event", this is used as a fallback full-sync interval.
 sync_interval_secs = 60
 
 # Automatically create a new Feishu document if document_id is empty.
 # The created document ID is logged but not written back to config.
 # Default: false.
 auto_create_doc = false
+
+# Optional: Feishu App ID for event subscription.
+# Falls back to [channels_config.feishu].app_id if not set.
+# app_id = "cli_xxxxxxxxxxxx"
+
+# Optional: Feishu App Secret for event subscription.
+# Falls back to [channels_config.feishu].app_secret if not set.
+# app_secret = "xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Optional: Encrypt key for WebSocket event decryption (from Feishu console).
+# encrypt_key = "your_encrypt_key"
 ```
 
 ### Field Reference
@@ -100,10 +118,14 @@ auto_create_doc = false
 | `enabled` | bool | `false` | Master switch for the sync engine |
 | `document_id` | string | `""` | Feishu document ID to sync with |
 | `sync_files` | vec of strings | `["config.toml", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]` | Local files included in sync |
-| `sync_interval_secs` | u64 | `60` | How often (seconds) to poll the remote document |
+| `remote_mode` | string | `"polling"` | How to receive remote changes: `"polling"` or `"event"` |
+| `sync_interval_secs` | u64 | `60` | Polling interval (seconds); also fallback full-sync interval in event mode |
 | `auto_create_doc` | bool | `false` | Create a new document when `document_id` is empty |
+| `app_id` | string (optional) | `None` | Feishu App ID for event subscription; falls back to channel config |
+| `app_secret` | string (optional) | `None` | Feishu App Secret for event subscription; falls back to channel config |
+| `encrypt_key` | string (optional) | `None` | Encrypt key for WebSocket event decryption |
 
-Your Feishu app credentials (`app_id` and `app_secret`) should be provided through the Lark channel config or environment variables, not in the `[docs_sync]` section directly.
+Feishu app credentials (`app_id` and `app_secret`) can be provided directly in `[docs_sync]` or inherited from `[channels_config.feishu]`. When using `remote_mode = "event"`, at least one source of credentials is required.
 
 ## Security Considerations
 

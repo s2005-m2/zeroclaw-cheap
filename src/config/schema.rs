@@ -479,6 +479,18 @@ fn default_sync_interval_secs() -> u64 {
     60
 }
 
+/// How ZeroClaw receives remote document changes for docs sync.
+///
+/// - `polling` (default) — periodically fetch the document on `sync_interval_secs`.
+/// - `event`             — subscribe to `drive.file.edit_v1` via Feishu WebSocket long-connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteSyncMode {
+    #[default]
+    Polling,
+    Event,
+}
+
 /// Feishu Docs bidirectional sync configuration (`[docs_sync]` section).
 ///
 /// Enables syncing local config files to/from a Feishu document.
@@ -499,6 +511,18 @@ pub struct DocsSyncConfig {
     /// Automatically create a Feishu document if document_id is empty.
     #[serde(default)]
     pub auto_create_doc: bool,
+    /// How to receive remote changes: "polling" (default) or "event" (WebSocket subscription).
+    #[serde(default)]
+    pub remote_mode: RemoteSyncMode,
+    /// Feishu App ID for event subscription. Falls back to `[channels_config.feishu].app_id`.
+    #[serde(default)]
+    pub app_id: Option<String>,
+    /// Feishu App Secret for event subscription. Falls back to `[channels_config.feishu].app_secret`.
+    #[serde(default)]
+    pub app_secret: Option<String>,
+    /// Encrypt key for WebSocket event decryption (optional, from Feishu console).
+    #[serde(default)]
+    pub encrypt_key: Option<String>,
 }
 
 impl Default for DocsSyncConfig {
@@ -509,6 +533,10 @@ impl Default for DocsSyncConfig {
             sync_files: default_sync_files(),
             sync_interval_secs: default_sync_interval_secs(),
             auto_create_doc: false,
+            remote_mode: RemoteSyncMode::default(),
+            app_id: None,
+            app_secret: None,
+            encrypt_key: None,
         }
     }
 }
