@@ -14,7 +14,6 @@ pub use sync::{sync_local_to_remote, sync_remote_to_local, validate_remote_confi
 pub use watcher::FileWatcher;
 pub use event_subscriber::EventSubscriber;
 pub use worker::run as run_worker;
-pub use DocsSyncSharer;
 
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
