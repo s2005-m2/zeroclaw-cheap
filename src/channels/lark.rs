@@ -14,7 +14,7 @@ const FEISHU_BASE_URL: &str = "https://open.feishu.cn/open-apis";
 const FEISHU_WS_BASE_URL: &str = "https://open.feishu.cn";
 const LARK_BASE_URL: &str = "https://open.larksuite.com/open-apis";
 const LARK_WS_BASE_URL: &str = "https://open.larksuite.com";
-const ACK_REACTION_EMOJI_TYPE: &str = "MUSCLE";
+const ACK_REACTION_EMOJI_TYPE: &str = "THUMBSUP";
 const LARK_MAX_FILE_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 const LARK_MAX_FILE_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 
@@ -424,7 +424,7 @@ impl LarkChannel {
     }
 
     fn cardkit_url(&self) -> String {
-        format!("{}/cardkit/v1/card", self.api_base())
+        format!("{}/cardkit/v1/cards", self.api_base())
     }
 
 
@@ -1824,10 +1824,11 @@ impl LarkChannel {
 // WS helper functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Acknowledgment reaction emoji pool (locale-independent for now).
+/// Acknowledgment reaction emoji pool — uses Feishu/Lark predefined emoji_type
+/// string constants (not Unicode). See Feishu Open API reaction docs for valid values.
 /// When per-locale pools are needed, reintroduce locale detection with a
 /// proper library (e.g. `whatlang`) instead of hand-rolled character matching.
-const LARK_ACK_REACTIONS: &[&str] = &["👍", "👌", "💪", "🎉", "❤️"];
+const LARK_ACK_REACTIONS: &[&str] = &["THUMBSUP", "OK", "MUSCLE", "CELEBRATE", "HEART"];
 
 fn pick_uniform_index(len: usize) -> usize {
     debug_assert!(len > 0);
@@ -2835,7 +2836,7 @@ mod tests {
         let ch = make_channel();
         assert_eq!(
             ch.cardkit_url(),
-            "https://open.larksuite.com/open-apis/cardkit/v1/card"
+            "https://open.larksuite.com/open-apis/cardkit/v1/cards"
         );
     }
     #[test]
@@ -2850,7 +2851,7 @@ mod tests {
         );
         assert_eq!(
             ch.cardkit_url(),
-            "https://open.feishu.cn/open-apis/cardkit/v1/card"
+            "https://open.feishu.cn/open-apis/cardkit/v1/cards"
         );
     }
     #[test]

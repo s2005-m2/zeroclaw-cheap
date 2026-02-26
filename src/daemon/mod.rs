@@ -86,10 +86,28 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         crate::health::mark_component_ok("scheduler");
         tracing::info!("Cron disabled; scheduler supervisor not started");
     }
+    #[cfg(feature = "feishu-docs-sync")]
+    {
+        if config.docs_sync.enabled {
+            let docs_sync_cfg = config.clone();
+            handles.push(spawn_component_supervisor(
+                "docs_sync",
+                initial_backoff,
+                max_backoff,
+                move || {
+                    let cfg = docs_sync_cfg.clone();
+                    async move { crate::docs_sync::run_worker(cfg).await }
+                },
+            ));
+        } else {
+            crate::health::mark_component_ok("docs_sync");
+            tracing::info!("Docs sync disabled; docs_sync supervisor not started");
+        }
+    }
 
     println!("🧠 ZeroClaw daemon started");
     println!("   Gateway:  http://{host}:{port}");
-    println!("   Components: gateway, channels, heartbeat, scheduler");
+    println!("   Components: gateway, channels, heartbeat, scheduler, docs_sync");
     println!("   Ctrl+C to stop");
 
     tokio::signal::ctrl_c().await?;
