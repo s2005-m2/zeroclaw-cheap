@@ -42,6 +42,8 @@ pub struct Agent {
     mcp_generation: u64,
     mcp_cached_context: String,
     hook_runner: Arc<crate::hooks::HookRunner>,
+    #[cfg(feature = "feishu-docs-sync")]
+    docs_sync_config: Option<crate::config::DocsSyncConfig>,
 }
 
 pub struct AgentBuilder {
@@ -65,6 +67,8 @@ pub struct AgentBuilder {
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
     mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
+    #[cfg(feature = "feishu-docs-sync")]
+    docs_sync_config: Option<crate::config::DocsSyncConfig>,
 }
 
 impl AgentBuilder {
@@ -90,6 +94,8 @@ impl AgentBuilder {
             mcp_registry: None,
             mcp_pending_configs: Vec::new(),
             hook_runner: None,
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         }
     }
 
@@ -202,6 +208,12 @@ impl AgentBuilder {
         self
     }
 
+    #[cfg(feature = "feishu-docs-sync")]
+    pub fn docs_sync_config(mut self, config: crate::config::DocsSyncConfig) -> Self {
+        self.docs_sync_config = Some(config);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -251,6 +263,8 @@ impl AgentBuilder {
             hook_runner: self
                 .hook_runner
                 .unwrap_or_else(|| Arc::new(crate::hooks::HookRunner::new())),
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: self.docs_sync_config,
         })
     }
 }
@@ -451,6 +465,12 @@ impl Agent {
             builder = builder.mcp_pending_configs(mcp_pending_configs);
         }
 
+        #[cfg(feature = "feishu-docs-sync")]
+        {
+            builder = builder.docs_sync_config(config.docs_sync.clone());
+        }
+
+
         builder.build()
     }
 
@@ -491,6 +511,8 @@ impl Agent {
             skills_prompt_mode: self.skills_prompt_mode,
             identity_config: Some(&self.identity_config),
             dispatcher_instructions: &instructions,
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: self.docs_sync_config.as_ref(),
         };
         self.prompt_builder.build(&ctx)
     }

@@ -20,6 +20,8 @@ pub mod browser_open;
 pub mod cli_discovery;
 pub mod composio;
 pub mod content_search;
+#[cfg(feature = "feishu-docs-sync")]
+pub mod docs_sync;
 pub mod cron_add;
 pub mod cron_list;
 pub mod cron_remove;
@@ -62,6 +64,8 @@ pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
 pub use content_search::ContentSearchTool;
+#[cfg(feature = "feishu-docs-sync")]
+pub use docs_sync::DocsSyncTool;
 pub use cron_add::CronAddTool;
 pub use cron_list::CronListTool;
 pub use cron_remove::CronRemoveTool;
@@ -404,6 +408,18 @@ pub fn all_tools_with_runtime(
             workspace_dir.to_path_buf(),
             Arc::new(root_config.clone()),
         )));
+    }
+
+    // Register docs_sync tool when feishu-docs-sync feature is enabled and sync is configured
+    #[cfg(feature = "feishu-docs-sync")]
+    {
+        if root_config.docs_sync.enabled {
+            tool_arcs.push(Arc::new(DocsSyncTool::new(
+                config.clone(),
+                security.clone(),
+                workspace_dir.to_path_buf(),
+            )));
+        }
     }
 
     boxed_registry_from_arcs(tool_arcs)

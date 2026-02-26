@@ -18,7 +18,7 @@ HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
 # npm China mirror (npmmirror is the standard China mirror)
 NPM_MIRROR="${NPM_MIRROR:-https://registry.npmmirror.com}"
 # Features to compile for China deployment
-CN_FEATURES="local-embedding,memory-lancedb,local-transcription,channel-lark,vpn"
+CN_FEATURES="local-embedding,memory-lancedb,local-transcription,channel-lark,vpn,feishu-docs-sync"
 
 SKIP_BUILD=false
 SKIP_MODELS=false

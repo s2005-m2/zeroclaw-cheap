@@ -84,6 +84,8 @@ mod tunnel;
 mod util;
 #[cfg(feature = "vpn")]
 mod vpn;
+#[cfg(feature = "feishu-docs-sync")]
+mod docs_sync;
 
 use config::Config;
 

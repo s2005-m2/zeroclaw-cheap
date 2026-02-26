@@ -1,4 +1,6 @@
 use crate::config::IdentityConfig;
+#[cfg(feature = "feishu-docs-sync")]
+use crate::config::DocsSyncConfig;
 use crate::identity;
 use crate::skills::Skill;
 use crate::tools::Tool;
@@ -17,6 +19,8 @@ pub struct PromptContext<'a> {
     pub skills_prompt_mode: crate::config::SkillsPromptInjectionMode,
     pub identity_config: Option<&'a IdentityConfig>,
     pub dispatcher_instructions: &'a str,
+    #[cfg(feature = "feishu-docs-sync")]
+    pub docs_sync_config: Option<&'a DocsSyncConfig>,
 }
 
 pub trait PromptSection: Send + Sync {
@@ -40,6 +44,8 @@ impl SystemPromptBuilder {
                 Box::new(WorkspaceSection),
                 Box::new(DateTimeSection),
                 Box::new(RuntimeSection),
+                #[cfg(feature = "feishu-docs-sync")]
+                Box::new(DocsSyncSection),
             ],
         }
     }
@@ -70,6 +76,8 @@ pub struct SkillsSection;
 pub struct WorkspaceSection;
 pub struct RuntimeSection;
 pub struct DateTimeSection;
+#[cfg(feature = "feishu-docs-sync")]
+pub struct DocsSyncSection;
 
 impl PromptSection for IdentitySection {
     fn name(&self) -> &str {
@@ -206,6 +214,48 @@ impl PromptSection for DateTimeSection {
     }
 }
 
+#[cfg(feature = "feishu-docs-sync")]
+impl PromptSection for DocsSyncSection {
+    fn name(&self) -> &str {
+        "docs_sync"
+    }
+
+    fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
+        let config = match ctx.docs_sync_config {
+            Some(c) if c.enabled => c,
+            _ => return Ok(String::new()),
+        };
+
+        let mut out = String::from("## Feishu Docs Sync\n\n");
+        out.push_str("Bidirectional sync with Feishu Docs is **enabled**.\n\n");
+
+        if !config.document_id.is_empty() {
+            let _ = writeln!(out, "- Document ID: `{}`", config.document_id);
+        }
+
+        let mode_str = match config.remote_mode {
+            crate::config::RemoteSyncMode::Polling => "polling",
+            crate::config::RemoteSyncMode::Event => "event (WebSocket)",
+        };
+        let _ = writeln!(out, "- Remote sync mode: {mode_str}");
+        let _ = writeln!(out, "- Sync interval: {}s", config.sync_interval_secs);
+
+        if config.sync_files.is_empty() {
+            out.push_str("- Synced files: (none)\n");
+        } else {
+            out.push_str("- Synced files:\n");
+            for f in &config.sync_files {
+                let _ = writeln!(out, "  - `{f}`");
+            }
+        }
+
+        out.push_str("\nYou have a `docs_sync` tool to manage synced files ");
+        out.push_str("(list, add, remove, push, pull, status).\n");
+
+        Ok(out)
+    }
+}
+
 fn inject_workspace_file(prompt: &mut String, workspace_dir: &Path, filename: &str) {
     let path = workspace_dir.join(filename);
     match std::fs::read_to_string(&path) {
@@ -300,6 +350,8 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: Some(&identity_config),
             dispatcher_instructions: "",
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         };
 
         let section = IdentitySection;
@@ -328,6 +380,8 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "instr",
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
         assert!(prompt.contains("## Tools"));
@@ -363,6 +417,8 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "",
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         };
 
         let output = SkillsSection.build(&ctx).unwrap();
@@ -401,6 +457,8 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Compact,
             identity_config: None,
             dispatcher_instructions: "",
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         };
 
         let output = SkillsSection.build(&ctx).unwrap();
@@ -422,6 +480,8 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "instr",
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         };
 
         let rendered = DateTimeSection.build(&ctx).unwrap();
@@ -460,6 +520,8 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "",
+            #[cfg(feature = "feishu-docs-sync")]
+            docs_sync_config: None,
         };
 
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
