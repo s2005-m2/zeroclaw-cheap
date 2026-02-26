@@ -818,8 +818,7 @@ impl LarkChannel {
                         continue;
                     }
 
-                    let ack_emoji =
-                        random_lark_ack_reaction(Some(&event_payload), &text).to_string();
+                    let ack_emoji = "OK";
                     let reaction_channel = self.clone();
                     let reaction_message_id = lark_msg.message_id.clone();
                     tokio::spawn(async move {
@@ -1773,9 +1772,7 @@ impl LarkChannel {
                     .pointer("/event/message/message_id")
                     .and_then(|m| m.as_str())
                 {
-                    let ack_text = messages.first().map_or("", |msg| msg.content.as_str());
-                    let ack_emoji =
-                        random_lark_ack_reaction(payload.get("event"), ack_text).to_string();
+                    let ack_emoji = "OK";
                     let reaction_channel = Arc::clone(&state.channel);
                     let reaction_message_id = message_id.to_string();
                     tokio::spawn(async move {
@@ -1824,31 +1821,6 @@ impl LarkChannel {
 // WS helper functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Acknowledgment reaction emoji pool — uses Feishu/Lark predefined emoji_type
-/// string constants (not Unicode). See Feishu Open API reaction docs for valid values.
-/// When per-locale pools are needed, reintroduce locale detection with a
-/// proper library (e.g. `whatlang`) instead of hand-rolled character matching.
-const LARK_ACK_REACTIONS: &[&str] = &["OK"];
-
-fn pick_uniform_index(len: usize) -> usize {
-    debug_assert!(len > 0);
-    let upper = len as u64;
-    let reject_threshold = (u64::MAX / upper) * upper;
-
-    loop {
-        let value = rand::random::<u64>();
-        if value < reject_threshold {
-            return (value % upper) as usize;
-        }
-    }
-}
-
-fn random_lark_ack_reaction(
-    _payload: Option<&serde_json::Value>,
-    _fallback_text: &str,
-) -> &'static str {
-    LARK_ACK_REACTIONS[pick_uniform_index(LARK_ACK_REACTIONS.len())]
-}
 
 /// Flatten a Feishu `post` rich-text message to plain text.
 ///
@@ -2592,11 +2564,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn random_lark_ack_reaction_returns_from_pool() {
-        let selected = random_lark_ack_reaction(None, "hello");
-        assert!(LARK_ACK_REACTIONS.contains(&selected));
-    }
     #[test]
     fn parse_lark_image_markers_extracts_images() {
         let msg = "Here is an image [IMAGE:/tmp/a.png] and text";
