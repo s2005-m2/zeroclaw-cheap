@@ -347,7 +347,7 @@ impl LarkChannel {
             platform,
         );
         ch.receive_mode = config.receive_mode.clone();
-        ch.stream_mode = config.stream_mode;
+        ch.stream_mode = StreamMode::Off; // CardKit update_card API is broken ("card is required"); disable streaming
         ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
@@ -363,7 +363,7 @@ impl LarkChannel {
             LarkPlatform::Lark,
         );
         ch.receive_mode = config.receive_mode.clone();
-        ch.stream_mode = config.stream_mode;
+        ch.stream_mode = StreamMode::Off; // CardKit update_card API is broken ("card is required"); disable streaming
         ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
@@ -379,7 +379,7 @@ impl LarkChannel {
             LarkPlatform::Feishu,
         );
         ch.receive_mode = config.receive_mode.clone();
-        ch.stream_mode = config.stream_mode;
+        ch.stream_mode = StreamMode::Off; // CardKit update_card API is broken ("card is required"); disable streaming
         ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
