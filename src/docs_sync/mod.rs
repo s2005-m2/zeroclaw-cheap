@@ -8,7 +8,7 @@ pub mod sync;
 pub mod watcher;
 pub mod event_subscriber;
 
-pub use client::FeishuDocsClient;
+pub use client::{FeishuDocsClient, BlockUpdate};
 pub use sync::{sync_local_to_remote, sync_remote_to_local, validate_remote_config};
 pub use watcher::FileWatcher;
 pub use event_subscriber::EventSubscriber;

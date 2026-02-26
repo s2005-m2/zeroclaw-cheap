@@ -266,6 +266,38 @@ impl FeishuDocsClient {
         }
         Ok(())
     }
+    /// GET /docx/v1/documents/{id}/blocks — list all blocks in the document.
+    /// Returns a vec of (block_id, block_type) tuples.
+    pub async fn get_document_blocks(&self, document_id: &str) -> Result<Vec<(String, i64)>> {
+        let token = self.get_token().await?;
+        let url = format!("{FEISHU_BASE_URL}/docx/v1/documents/{document_id}/blocks");
+        let resp = self
+            .send_with_retry(|| self.http.get(&url).bearer_auth(&token))
+            .await?;
+        let status = resp.status();
+        let data: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            bail!("Feishu get_document_blocks failed: status={status}, body={data}");
+        }
+        let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            let msg = data.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+            bail!("Feishu get_document_blocks error: {msg}");
+        }
+        let items = data.pointer("/data/items").and_then(|v| v.as_array());
+        let blocks = items
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let id = item.get("block_id")?.as_str()?.to_string();
+                        let bt = item.get("block_type")?.as_i64()?;
+                        Some((id, bt))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(blocks)
+    }
     /// POST /docx/v1/documents — create a new document.
     pub async fn create_document(&self, title: &str) -> Result<String> {
         let token = self.get_token().await?;

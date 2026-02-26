@@ -225,15 +225,45 @@ impl DocsSyncTool {
             &self.workspace_dir,
         )?;
         let client = crate::docs_sync::FeishuDocsClient::new(app_id, app_secret);
-        // For push, we use the raw content API to update the document.
-        // The full block-level update is complex; log the serialized content size.
         let byte_len = content.len();
         tracing::info!("docs_sync push: {byte_len} bytes to doc {}", ds.document_id);
+
+        // Find the first code block in the document to update.
+        let blocks = client.get_document_blocks(&ds.document_id).await.map_err(|e| {
+            anyhow::anyhow!("Failed to list document blocks: {e}")
+        })?;
+        // block_type 14 = Code in Feishu Docs API
+        let code_block = blocks.iter().find(|(_, bt)| *bt == 14);
+        let target_block_id = match code_block {
+            Some((id, _)) => id.clone(),
+            None => {
+                // No code block found — use the document (page) block itself.
+                // block_type 1 = Page
+                blocks.iter()
+                    .find(|(_, bt)| *bt == 1)
+                    .map(|(id, _)| id.clone())
+                    .unwrap_or_else(|| ds.document_id.clone())
+            }
+        };
+
+        let update = crate::docs_sync::client::BlockUpdate {
+            block_id: target_block_id,
+            update_text_elements: serde_json::json!({
+                "elements": [{
+                    "text_run": {
+                        "content": content,
+                    }
+                }]
+            }),
+        };
+        client.batch_update_blocks(&ds.document_id, &[update]).await.map_err(|e| {
+            anyhow::anyhow!("Failed to push to Feishu document: {e}")
+        })?;
+
         Ok(ToolResult {
             success: true,
             output: format!(
-                "Prepared {byte_len} bytes from {} file(s) for push to document {}. \
-                 Note: full push requires the background sync engine to be running.",
+                "Pushed {byte_len} bytes from {} file(s) to document {}.",
                 ds.sync_files.len(),
                 ds.document_id,
             ),
