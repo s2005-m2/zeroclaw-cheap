@@ -40,16 +40,50 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         ));
     }
 
+    // Create shared LarkWsManager when lark or docs_sync features are enabled
+    #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+    let lark_ws_manager: Option<std::sync::Arc<crate::channels::lark_ws_manager::LarkWsManager>> = {
+        // Try feishu config first (always is_feishu=true), then lark config
+        let lark_creds = config.channels_config.feishu.as_ref().map(|fs| {
+            (fs.app_id.clone(), fs.app_secret.clone(), true)
+        }).or_else(|| {
+            config.channels_config.lark.as_ref().map(|lk| {
+                (lk.app_id.clone(), lk.app_secret.clone(), lk.use_feishu)
+            })
+        });
+        if let Some((app_id, app_secret, is_feishu)) = lark_creds {
+            let manager = std::sync::Arc::new(
+                crate::channels::lark_ws_manager::LarkWsManager::new(
+                    app_id, app_secret, is_feishu, 256,
+                )
+            );
+            let mgr = manager.clone();
+            tokio::spawn(async move { mgr.run().await });
+            Some(manager)
+        } else {
+            None
+        }
+    };
+
     {
         if has_supervised_channels(&config) {
             let channels_cfg = config.clone();
+            #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+            let channels_ws_mgr = lark_ws_manager.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
                 max_backoff,
                 move || {
                     let cfg = channels_cfg.clone();
-                    async move { crate::channels::start_channels(cfg).await }
+                    #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+                    let mgr = channels_ws_mgr.clone();
+                    async move {
+                        #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+                        { crate::channels::start_channels(cfg, mgr).await }
+                        #[cfg(not(any(feature = "channel-lark", feature = "feishu-docs-sync")))]
+                        { crate::channels::start_channels(cfg).await }
+                    }
                 },
             ));
         } else {
@@ -90,13 +124,15 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     {
         if config.docs_sync.enabled {
             let docs_sync_cfg = config.clone();
+            let docs_sync_ws_mgr = lark_ws_manager.clone();
             handles.push(spawn_component_supervisor(
                 "docs_sync",
                 initial_backoff,
                 max_backoff,
                 move || {
                     let cfg = docs_sync_cfg.clone();
-                    async move { crate::docs_sync::run_worker(cfg).await }
+                    let mgr = docs_sync_ws_mgr.clone();
+                    async move { crate::docs_sync::run_worker(cfg, mgr).await }
                 },
             ));
         } else {

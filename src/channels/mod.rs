@@ -23,6 +23,8 @@ pub mod imessage;
 pub mod irc;
 #[cfg(feature = "channel-lark")]
 pub mod lark;
+#[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+pub mod lark_ws_manager;
 pub mod linq;
 #[cfg(feature = "channel-matrix")]
 pub mod matrix;
@@ -2694,6 +2696,8 @@ struct ConfiguredChannel {
 fn collect_configured_channels(
     config: &Config,
     matrix_skip_context: &str,
+    #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+    ws_manager: &Option<std::sync::Arc<lark_ws_manager::LarkWsManager>>,
 ) -> Vec<ConfiguredChannel> {
     let mut channels = Vec::new();
 
@@ -2947,6 +2951,9 @@ fn collect_configured_channels(
                         if let Some(ref sharer) = docs_sharer {
                             ch.set_docs_sharer(std::sync::Arc::clone(sharer));
                         }
+                        if let Some(ref mgr) = ws_manager {
+                            ch.set_ws_manager(std::sync::Arc::clone(mgr));
+                        }
                         ch
                     }),
                 });
@@ -2959,6 +2966,9 @@ fn collect_configured_channels(
                     #[cfg(feature = "feishu-docs-sync")]
                     if let Some(ref sharer) = docs_sharer {
                         ch.set_docs_sharer(std::sync::Arc::clone(sharer));
+                    }
+                    if let Some(ref mgr) = ws_manager {
+                        ch.set_ws_manager(std::sync::Arc::clone(mgr));
                     }
                     ch
                 }),
@@ -2975,6 +2985,9 @@ fn collect_configured_channels(
                 #[cfg(feature = "feishu-docs-sync")]
                 if let Some(ref sharer) = docs_sharer {
                     ch.set_docs_sharer(std::sync::Arc::clone(sharer));
+                }
+                if let Some(ref mgr) = ws_manager {
+                    ch.set_ws_manager(std::sync::Arc::clone(mgr));
                 }
                 ch
             }),
@@ -3022,6 +3035,9 @@ fn collect_configured_channels(
 
 /// Run health checks for configured channels.
 pub async fn doctor_channels(config: Config) -> Result<()> {
+    #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+    let mut channels = collect_configured_channels(&config, "health check", &None);
+    #[cfg(not(any(feature = "channel-lark", feature = "feishu-docs-sync")))]
     let mut channels = collect_configured_channels(&config, "health check");
 
     if let Some(ref ns) = config.channels_config.nostr {
@@ -3079,8 +3095,12 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 }
 
 /// Start all configured channels and route messages to the agent
-#[allow(clippy::too_many_lines)]
-pub async fn start_channels(config: Config) -> Result<()> {
+#[allow(clippy::too_many_lines, unused_variables)]
+pub async fn start_channels(
+    config: Config,
+    #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+    ws_manager: Option<std::sync::Arc<lark_ws_manager::LarkWsManager>>,
+) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = providers::ProviderRuntimeOptions {
         auth_profile_override: None,
@@ -3299,6 +3319,13 @@ pub async fn start_channels(config: Config) -> Result<()> {
     }
 
     // Collect active channels from a shared builder to keep startup and doctor parity.
+    #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+    let mut channels: Vec<Arc<dyn Channel>> =
+        collect_configured_channels(&config, "runtime startup", &ws_manager)
+            .into_iter()
+            .map(|configured| configured.channel)
+            .collect();
+    #[cfg(not(any(feature = "channel-lark", feature = "feishu-docs-sync")))]
     let mut channels: Vec<Arc<dyn Channel>> =
         collect_configured_channels(&config, "runtime startup")
             .into_iter()
@@ -6366,6 +6393,9 @@ This is an example JSON object for profile settings."#;
             mention_only: Some(false),
         });
 
+        #[cfg(any(feature = "channel-lark", feature = "feishu-docs-sync"))]
+        let channels = collect_configured_channels(&config, "test", &None);
+        #[cfg(not(any(feature = "channel-lark", feature = "feishu-docs-sync")))]
         let channels = collect_configured_channels(&config, "test");
 
         assert!(channels

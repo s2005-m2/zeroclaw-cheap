@@ -1,13 +1,12 @@
+use super::lark_ws_manager::LarkWsManager;
 use super::traits::{Channel, ChannelMessage, SendMessage};
 use crate::config::StreamMode;
 use async_trait::async_trait;
-use futures_util::{SinkExt, StreamExt};
-use prost::Message as ProstMessage;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
 use tokio::sync::RwLock;
-use tokio_tungstenite::tungstenite::Message as WsMsg;
 use uuid::Uuid;
 
 const FEISHU_BASE_URL: &str = "https://open.feishu.cn/open-apis";
@@ -27,70 +26,6 @@ enum LarkAttachmentKind {
     Video,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Feishu WebSocket long-connection: pbbp2.proto frame codec
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct PbHeader {
-    #[prost(string, tag = "1")]
-    pub key: String,
-    #[prost(string, tag = "2")]
-    pub value: String,
-}
-
-/// Feishu WS frame (pbbp2.proto).
-/// method=0 → CONTROL (ping/pong)  method=1 → DATA (events)
-#[derive(Clone, PartialEq, prost::Message)]
-struct PbFrame {
-    #[prost(uint64, tag = "1")]
-    pub seq_id: u64,
-    #[prost(uint64, tag = "2")]
-    pub log_id: u64,
-    #[prost(int32, tag = "3")]
-    pub service: i32,
-    #[prost(int32, tag = "4")]
-    pub method: i32,
-    #[prost(message, repeated, tag = "5")]
-    pub headers: Vec<PbHeader>,
-    #[prost(bytes = "vec", optional, tag = "8")]
-    pub payload: Option<Vec<u8>>,
-}
-
-impl PbFrame {
-    fn header_value<'a>(&'a self, key: &str) -> &'a str {
-        self.headers
-            .iter()
-            .find(|h| h.key == key)
-            .map(|h| h.value.as_str())
-            .unwrap_or("")
-    }
-}
-
-/// Server-sent client config (parsed from pong payload)
-#[derive(Debug, serde::Deserialize, Default, Clone)]
-struct WsClientConfig {
-    #[serde(rename = "PingInterval")]
-    ping_interval: Option<u64>,
-}
-
-/// POST /callback/ws/endpoint response
-#[derive(Debug, serde::Deserialize)]
-struct WsEndpointResp {
-    code: i32,
-    #[serde(default)]
-    msg: Option<String>,
-    #[serde(default)]
-    data: Option<WsEndpoint>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct WsEndpoint {
-    #[serde(rename = "URL")]
-    url: String,
-    #[serde(rename = "ClientConfig")]
-    client_config: Option<WsClientConfig>,
-}
 
 /// LarkEvent envelope (method=1 / type=event payload)
 #[derive(Debug, serde::Deserialize)]
@@ -136,21 +71,12 @@ struct LarkMessage {
     mentions: Vec<serde_json::Value>,
 }
 
-/// Heartbeat timeout for WS connection — must be larger than ping_interval (default 30 s).
-/// If no binary frame (pong or event) is received within this window, reconnect.
-const WS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+/// Feishu/Lark API business code for expired/invalid tenant access token.
+const LARK_INVALID_ACCESS_TOKEN_CODE: i64 = 99_991_663;
 /// Refresh tenant token this many seconds before the announced expiry.
 const LARK_TOKEN_REFRESH_SKEW: Duration = Duration::from_secs(120);
 /// Fallback tenant token TTL when `expire`/`expires_in` is absent.
 const LARK_DEFAULT_TOKEN_TTL: Duration = Duration::from_secs(7200);
-/// Feishu/Lark API business code for expired/invalid tenant access token.
-const LARK_INVALID_ACCESS_TOKEN_CODE: i64 = 99_991_663;
-
-/// Returns true when the WebSocket frame indicates live traffic that should
-/// refresh the heartbeat watchdog.
-fn should_refresh_last_recv(msg: &WsMsg) -> bool {
-    matches!(msg, WsMsg::Binary(_) | WsMsg::Ping(_) | WsMsg::Pong(_))
-}
 
 #[derive(Debug, Clone)]
 struct CachedTenantToken {
@@ -287,6 +213,8 @@ pub struct LarkChannel {
     /// Optional docs_sync sharer for auto-sharing documents with new users.
     #[cfg(feature = "feishu-docs-sync")]
     docs_sharer: Option<std::sync::Arc<crate::docs_sync::DocsSyncSharer>>,
+    /// Shared WS connection manager (None when using webhook mode).
+    ws_manager: Option<Arc<LarkWsManager>>,
 }
 
 impl LarkChannel {
@@ -330,6 +258,7 @@ impl LarkChannel {
             card_sequence: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_draft_update: Arc::new(std::sync::Mutex::new(HashMap::new())),
             typing_card_ids: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            ws_manager: None,
             #[cfg(feature = "feishu-docs-sync")]
             docs_sharer: None,
         }
@@ -400,6 +329,11 @@ impl LarkChannel {
     #[cfg(feature = "feishu-docs-sync")]
     pub fn set_docs_sharer(&mut self, sharer: std::sync::Arc<crate::docs_sync::DocsSyncSharer>) {
         self.docs_sharer = Some(sharer);
+    }
+
+    /// Set the shared WS connection manager.
+    pub fn set_ws_manager(&mut self, manager: Arc<LarkWsManager>) {
+        self.ws_manager = Some(manager);
     }
 
     fn http_client(&self) -> reqwest::Client {
@@ -554,90 +488,14 @@ impl LarkChannel {
         }
     }
 
-    /// POST /callback/ws/endpoint → (wss_url, client_config)
-    async fn get_ws_endpoint(&self) -> anyhow::Result<(String, WsClientConfig)> {
-        let resp = self
-            .http_client()
-            .post(format!("{}/callback/ws/endpoint", self.ws_base()))
-            .header("locale", self.platform.locale_header())
-            .json(&serde_json::json!({
-                "AppID": self.app_id,
-                "AppSecret": self.app_secret,
-            }))
-            .send()
-            .await?
-            .json::<WsEndpointResp>()
-            .await?;
-        if resp.code != 0 {
-            anyhow::bail!(
-                "Lark WS endpoint failed: code={} msg={}",
-                resp.code,
-                resp.msg.as_deref().unwrap_or("(none)")
-            );
-        }
-        let ep = resp
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Lark WS endpoint: empty data"))?;
-        Ok((ep.url, ep.client_config.unwrap_or_default()))
-    }
-
-    /// WS long-connection event loop.  Returns Ok(()) when the connection closes
-    /// (the caller reconnects).
+    /// WS event loop — receives decoded events from the shared `LarkWsManager`.
     #[allow(clippy::too_many_lines)]
     async fn listen_ws(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        let (wss_url, client_config) = self.get_ws_endpoint().await?;
-        let service_id = wss_url
-            .split('?')
-            .nth(1)
-            .and_then(|qs| {
-                qs.split('&')
-                    .find(|kv| kv.starts_with("service_id="))
-                    .and_then(|kv| kv.split('=').nth(1))
-                    .and_then(|v| v.parse::<i32>().ok())
-            })
-            .unwrap_or(0);
-        tracing::info!("Lark: connecting to {wss_url}");
+        let manager = self.ws_manager.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Lark: ws_manager not set"))?;
+        let mut rx = manager.subscribe();
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&wss_url).await?;
-        let (mut write, mut read) = ws_stream.split();
-        tracing::info!("Lark: WS connected (service_id={service_id})");
-
-        let mut ping_secs = client_config.ping_interval.unwrap_or(30).max(10);
-        let mut hb_interval = tokio::time::interval(Duration::from_secs(ping_secs));
-        // Exponential backoff for timeout checks: 0.5s → 10s
-        let mut timeout_backoff = Duration::from_millis(500);
-        const TIMEOUT_BACKOFF_MAX: Duration = Duration::from_secs(10);
-        hb_interval.tick().await; // consume immediate tick
-
-        let mut seq: u64 = 0;
-        let mut last_recv = Instant::now();
-
-        // Send initial ping immediately (like the official SDK) so the server
-        // starts responding with pongs and we can calibrate the ping_interval.
-        seq = seq.wrapping_add(1);
-        let initial_ping = PbFrame {
-            seq_id: seq,
-            log_id: 0,
-            service: service_id,
-            method: 0,
-            headers: vec![PbHeader {
-                key: "type".into(),
-                value: "ping".into(),
-            }],
-            payload: None,
-        };
-        if write
-            .send(WsMsg::Binary(initial_ping.encode_to_vec().into()))
-            .await
-            .is_err()
-        {
-            anyhow::bail!("Lark: initial ping failed");
-        }
-        // message_id → (fragment_slots, created_at) for multi-part reassembly
-        type FragEntry = (Vec<Option<Vec<u8>>>, Instant);
-        let mut frag_cache: HashMap<String, FragEntry> = HashMap::new();
         // Overflow buffer for messages that couldn't be sent (channel full).
-        // Drained at the top of each loop iteration to avoid blocking the WS read loop.
         const OVERFLOW_CAP: usize = 20;
         let mut overflow: VecDeque<ChannelMessage> = VecDeque::new();
 
@@ -651,246 +509,153 @@ impl LarkChannel {
                 }
             }
 
-            tokio::select! {
-                biased;
-
-                _ = hb_interval.tick() => {
-                    seq = seq.wrapping_add(1);
-                    let ping = PbFrame {
-                        seq_id: seq, log_id: 0, service: service_id, method: 0,
-                        headers: vec![PbHeader { key: "type".into(), value: "ping".into() }],
-                        payload: None,
-                    };
-                    if write.send(WsMsg::Binary(ping.encode_to_vec().into())).await.is_err() {
-                        tracing::warn!("Lark: ping failed, reconnecting");
-                        break;
-                    }
-                    // GC stale fragments > 5 min
-                    let cutoff = Instant::now().checked_sub(Duration::from_secs(300)).unwrap_or(Instant::now());
-                    frag_cache.retain(|_, (_, ts)| *ts > cutoff);
+            let event = match rx.recv().await {
+                Ok(ev) => ev,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("Lark: broadcast lagged, skipped {n} events");
+                    continue;
                 }
-
-                _ = tokio::time::sleep(timeout_backoff) => {
-                    if last_recv.elapsed() > WS_HEARTBEAT_TIMEOUT {
-                        tracing::warn!("Lark: heartbeat timeout, reconnecting");
-                        break;
-                    }
-                    // Exponential backoff: double until cap
-                    timeout_backoff = (timeout_backoff * 2).min(TIMEOUT_BACKOFF_MAX);
+                Err(broadcast::error::RecvError::Closed) => {
+                    anyhow::bail!("Lark: WS manager broadcast closed");
                 }
+            };
 
-                msg = read.next() => {
-                    let raw = match msg {
-                        Some(Ok(ws_msg)) => {
-                            if should_refresh_last_recv(&ws_msg) {
-                                last_recv = Instant::now();
-                                timeout_backoff = Duration::from_millis(500); // reset backoff on activity
-                            }
-                            match ws_msg {
-                                WsMsg::Binary(b) => b,
-                                WsMsg::Ping(d) => { let _ = write.send(WsMsg::Pong(d)).await; continue; }
-                                WsMsg::Close(_) => { tracing::info!("Lark: WS closed — reconnecting"); break; }
-                                _ => continue,
-                            }
-                        }
-                        None => { tracing::info!("Lark: WS closed — reconnecting"); break; }
-                        Some(Err(e)) => { tracing::error!("Lark: WS read error: {e}"); break; }
-                    };
+            if event.event_type != "im.message.receive_v1" { continue; }
 
-                    let frame = match PbFrame::decode(&raw[..]) {
-                        Ok(f) => f,
-                        Err(e) => { tracing::error!("Lark: proto decode: {e}"); continue; }
-                    };
+            let event_value: LarkEvent = match serde_json::from_slice(&event.payload) {
+                Ok(e) => e,
+                Err(e) => { tracing::error!("Lark: event JSON: {e}"); continue; }
+            };
 
-                    // CONTROL frame
-                    if frame.method == 0 {
-                        if frame.header_value("type") == "pong" {
-                            if let Some(p) = &frame.payload {
-                                if let Ok(cfg) = serde_json::from_slice::<WsClientConfig>(p) {
-                                    if let Some(secs) = cfg.ping_interval {
-                                        let secs = secs.max(10);
-                                        if secs != ping_secs {
-                                            ping_secs = secs;
-                                            hb_interval = tokio::time::interval(Duration::from_secs(ping_secs));
-                                            tracing::info!("Lark: ping_interval → {ping_secs}s");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        continue;
+            let event_payload = event_value.event;
+
+            let recv: MsgReceivePayload = match serde_json::from_value(event_payload.clone()) {
+                Ok(r) => r,
+                Err(e) => { tracing::error!("Lark: payload parse: {e}"); continue; }
+            };
+
+            if recv.sender.sender_type == "app" || recv.sender.sender_type == "bot" { continue; }
+
+            let sender_open_id = recv.sender.sender_id.open_id.as_deref().unwrap_or("");
+            if !self.is_user_allowed(sender_open_id) {
+                tracing::warn!("Lark WS: ignoring {sender_open_id} (not in allowed_users)");
+                continue;
+            }
+
+            // Auto-share docs_sync documents with new users
+            #[cfg(feature = "feishu-docs-sync")]
+            if let Some(ref sharer) = self.docs_sharer {
+                let sharer = std::sync::Arc::clone(sharer);
+                let oid = sender_open_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = sharer.share_all_docs_with(&oid).await {
+                        tracing::warn!("docs_sync: auto-share failed for {oid}: {e}");
                     }
+                });
+            }
 
-                    // DATA frame
-                    let msg_type = frame.header_value("type").to_string();
-                    let msg_id   = frame.header_value("message_id").to_string();
-                    let sum      = frame.header_value("sum").parse::<usize>().unwrap_or(1);
-                    let seq_num  = frame.header_value("seq").parse::<usize>().unwrap_or(0);
+            let lark_msg = &recv.message;
 
-                    // ACK immediately (Feishu requires within 3 s)
-                    {
-                        let mut ack = frame.clone();
-                        ack.payload = Some(br#"{"code":200,"headers":{},"data":[]}"#.to_vec());
-                        ack.headers.push(PbHeader { key: "biz_rt".into(), value: "0".into() });
-                        let _ = write.send(WsMsg::Binary(ack.encode_to_vec().into())).await;
-                    }
+            // Dedup
+            {
+                let now = Instant::now();
+                let mut seen = self.ws_seen_ids.write().await;
+                // GC
+                seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(30 * 60));
+                if seen.contains_key(&lark_msg.message_id) {
+                    tracing::debug!("Lark WS: dup {}", lark_msg.message_id);
+                    continue;
+                }
+                seen.insert(lark_msg.message_id.clone(), now);
+            }
 
-                    // Fragment reassembly
-                    let sum = if sum == 0 { 1 } else { sum };
-                    let payload: Vec<u8> = if sum == 1 || msg_id.is_empty() || seq_num >= sum {
-                        frame.payload.clone().unwrap_or_default()
-                    } else {
-                        let entry = frag_cache.entry(msg_id.clone())
-                            .or_insert_with(|| (vec![None; sum], Instant::now()));
-                        if entry.0.len() != sum { *entry = (vec![None; sum], Instant::now()); }
-                        entry.0[seq_num] = frame.payload.clone();
-                        if entry.0.iter().all(|s| s.is_some()) {
-                            let full: Vec<u8> = entry.0.iter()
-                                .flat_map(|s| s.as_deref().unwrap_or(&[]))
-                                .copied().collect();
-                            frag_cache.remove(&msg_id);
-                            full
-                        } else { continue; }
+            // Decode content by type (mirrors clawdbot-feishu parsing)
+            let text = match lark_msg.message_type.as_str() {
+                "text" => {
+                    let v: serde_json::Value = match serde_json::from_str(&lark_msg.content) {
+                        Ok(v) => v,
+                        Err(_) => continue,
                     };
-
-                    if msg_type != "event" { continue; }
-
-                    let event: LarkEvent = match serde_json::from_slice(&payload) {
-                        Ok(e) => e,
-                        Err(e) => { tracing::error!("Lark: event JSON: {e}"); continue; }
-                    };
-                    if event.header.event_type != "im.message.receive_v1" { continue; }
-
-                    let event_payload = event.event;
-
-                    let recv: MsgReceivePayload = match serde_json::from_value(event_payload.clone()) {
-                        Ok(r) => r,
-                        Err(e) => { tracing::error!("Lark: payload parse: {e}"); continue; }
-                    };
-
-                    if recv.sender.sender_type == "app" || recv.sender.sender_type == "bot" { continue; }
-
-                    let sender_open_id = recv.sender.sender_id.open_id.as_deref().unwrap_or("");
-                    if !self.is_user_allowed(sender_open_id) {
-                        tracing::warn!("Lark WS: ignoring {sender_open_id} (not in allowed_users)");
-                        continue;
+                    match v.get("text").and_then(|t| t.as_str()).filter(|s| !s.is_empty()) {
+                        Some(t) => t.to_string(),
+                        None => continue,
                     }
-
-                    // Auto-share docs_sync documents with new users
-                    #[cfg(feature = "feishu-docs-sync")]
-                    if let Some(ref sharer) = self.docs_sharer {
-                        let sharer = std::sync::Arc::clone(sharer);
-                        let oid = sender_open_id.to_string();
-                        tokio::spawn(async move {
-                            if let Err(e) = sharer.share_all_docs_with(&oid).await {
-                                tracing::warn!("docs_sync: auto-share failed for {oid}: {e}");
-                            }
-                        });
+                }
+                "post" => match parse_post_content(&lark_msg.content) {
+                    Some(t) => t,
+                    None => continue,
+                },
+                "image" => {
+                    match extract_image_key(&lark_msg.content) {
+                        Some(key) => format!("[IMAGE:lark_image_key:{key}]"),
+                        None => continue,
                     }
-
-                    let lark_msg = &recv.message;
-
-                    // Dedup
-                    {
-                        let now = Instant::now();
-                        let mut seen = self.ws_seen_ids.write().await;
-                        // GC
-                        seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(30 * 60));
-                        if seen.contains_key(&lark_msg.message_id) {
-                            tracing::debug!("Lark WS: dup {}", lark_msg.message_id);
-                            continue;
-                        }
-                        seen.insert(lark_msg.message_id.clone(), now);
+                }
+                "file" => match extract_file_key_and_name(&lark_msg.content) {
+                    Some((key, name)) => {
+                        let label = name.as_deref().unwrap_or(&key);
+                        format!("[DOCUMENT:lark_file_key:{key}:{label}]")
                     }
-
-                    // Decode content by type (mirrors clawdbot-feishu parsing)
-                    let text = match lark_msg.message_type.as_str() {
-                        "text" => {
-                            let v: serde_json::Value = match serde_json::from_str(&lark_msg.content) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            match v.get("text").and_then(|t| t.as_str()).filter(|s| !s.is_empty()) {
-                                Some(t) => t.to_string(),
-                                None => continue,
-                            }
-                        }
-                        "post" => match parse_post_content(&lark_msg.content) {
-                            Some(t) => t,
-                            None => continue,
-                        },
-                        "image" => {
-                            match extract_image_key(&lark_msg.content) {
-                                Some(key) => format!("[IMAGE:lark_image_key:{key}]"),
-                                None => continue,
-                            }
-                        }
-                        "file" => match extract_file_key_and_name(&lark_msg.content) {
-                            Some((key, name)) => {
-                                let label = name.as_deref().unwrap_or(&key);
-                                format!("[DOCUMENT:lark_file_key:{key}:{label}]")
-                            }
-                            None => continue,
-                        },
-                        "audio" => match extract_file_key(&lark_msg.content) {
-                            Some(key) => format!("[AUDIO:lark_file_key:{key}]"),
-                            None => continue,
-                        },
-                        "media" => match extract_file_key_and_name(&lark_msg.content) {
-                            Some((key, name)) => {
-                                let label = name.as_deref().unwrap_or(&key);
-                                format!("[VIDEO:lark_file_key:{key}:{label}]")
-                            }
-                            None => continue,
-                        },
-                        _ => continue,
-                    };
-
-                    // Strip @_user_N placeholders
-                    let text = strip_at_placeholders(&text);
-                    let text = text.trim().to_string();
-                    if text.is_empty() { continue; }
-
-                    // Group-chat: only respond when explicitly @-mentioned
-                    if lark_msg.chat_type == "group" && !should_respond_in_group(&lark_msg.mentions) {
-                        continue;
+                    None => continue,
+                },
+                "audio" => match extract_file_key(&lark_msg.content) {
+                    Some(key) => format!("[AUDIO:lark_file_key:{key}]"),
+                    None => continue,
+                },
+                "media" => match extract_file_key_and_name(&lark_msg.content) {
+                    Some((key, name)) => {
+                        let label = name.as_deref().unwrap_or(&key);
+                        format!("[VIDEO:lark_file_key:{key}:{label}]")
                     }
+                    None => continue,
+                },
+                _ => continue,
+            };
 
-                    let ack_emoji = "OK";
-                    let reaction_channel = self.clone();
-                    let reaction_message_id = lark_msg.message_id.clone();
-                    tokio::spawn(async move {
-                        reaction_channel
-                            .try_add_ack_reaction(&reaction_message_id, &ack_emoji)
-                            .await;
-                    });
+            // Strip @_user_N placeholders
+            let text = strip_at_placeholders(&text);
+            let text = text.trim().to_string();
+            if text.is_empty() { continue; }
 
-                    let channel_msg = ChannelMessage {
-                        id: Uuid::new_v4().to_string(),
-                        sender: lark_msg.chat_id.clone(),
-                        reply_target: lark_msg.chat_id.clone(),
-                        content: text,
-                        channel: self.channel_name().to_string(),
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                        thread_ts: None,
-                    };
+            // Group-chat: only respond when explicitly @-mentioned
+            if lark_msg.chat_type == "group" && !should_respond_in_group(&lark_msg.mentions) {
+                continue;
+            }
 
-                    tracing::debug!("Lark WS: message in {}", lark_msg.chat_id);
-                    match tx.try_send(channel_msg) {
-                        Ok(()) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
-                            if overflow.len() >= OVERFLOW_CAP {
-                                tracing::warn!("Lark WS: overflow buffer full, dropping oldest message");
-                                overflow.pop_front();
-                            }
-                            tracing::warn!("Lark WS: channel full, buffering message for {}", msg.sender);
-                            overflow.push_back(msg);
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            let ack_emoji = "OK";
+            let reaction_channel = self.clone();
+            let reaction_message_id = lark_msg.message_id.clone();
+            tokio::spawn(async move {
+                reaction_channel
+                    .try_add_ack_reaction(&reaction_message_id, &ack_emoji)
+                    .await;
+            });
+
+            let channel_msg = ChannelMessage {
+                id: Uuid::new_v4().to_string(),
+                sender: lark_msg.chat_id.clone(),
+                reply_target: lark_msg.chat_id.clone(),
+                content: text,
+                channel: self.channel_name().to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                thread_ts: None,
+            };
+
+            tracing::debug!("Lark WS: message in {}", lark_msg.chat_id);
+            match tx.try_send(channel_msg) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                    if overflow.len() >= OVERFLOW_CAP {
+                        tracing::warn!("Lark WS: overflow buffer full, dropping oldest message");
+                        overflow.pop_front();
                     }
+                    tracing::warn!("Lark WS: channel full, buffering message for {}", msg.sender);
+                    overflow.push_back(msg);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
         Ok(())
@@ -2117,20 +1882,6 @@ mod tests {
         assert_eq!(ch.name(), "lark");
     }
 
-    #[test]
-    fn lark_ws_activity_refreshes_heartbeat_watchdog() {
-        assert!(should_refresh_last_recv(&WsMsg::Binary(
-            vec![1, 2, 3].into()
-        )));
-        assert!(should_refresh_last_recv(&WsMsg::Ping(vec![9, 9].into())));
-        assert!(should_refresh_last_recv(&WsMsg::Pong(vec![8, 8].into())));
-    }
-
-    #[test]
-    fn lark_ws_non_activity_frames_do_not_refresh_heartbeat_watchdog() {
-        assert!(!should_refresh_last_recv(&WsMsg::Text("hello".into())));
-        assert!(!should_refresh_last_recv(&WsMsg::Close(None)));
-    }
 
     #[test]
     fn lark_should_refresh_token_on_http_401() {
@@ -2951,5 +2702,4 @@ mod tests {
         assert_eq!(removed, Some("card_typing_1".to_string()));
         assert!(ch.typing_card_ids.lock().unwrap().is_empty());
     }
-}
 }

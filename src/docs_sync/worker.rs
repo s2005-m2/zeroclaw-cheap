@@ -94,7 +94,10 @@ async fn push_single_file(
 /// Local files are source-of-truth for existence:
 /// - Push: only files that exist locally get uploaded. Auto-creates Feishu doc.
 /// - Pull: only updates files that already exist locally. Never creates new files.
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run(
+    config: Config,
+    lark_ws_manager: Option<std::sync::Arc<crate::channels::lark_ws_manager::LarkWsManager>>,
+) -> Result<()> {
     let ds = &config.docs_sync;
     if !ds.enabled {
         bail!("docs_sync: not enabled");
@@ -166,8 +169,10 @@ pub async fn run(config: Config) -> Result<()> {
             // WebSocket event subscriber for real-time remote edits.
             // We subscribe to ALL doc_ids in the lock — any edit triggers a pull cycle.
             let sub_doc_id = lock.values().next().map(|e| e.doc_id.clone()).unwrap_or_default();
+            let manager = lark_ws_manager.clone()
+                .ok_or_else(|| anyhow::anyhow!("docs_sync: LarkWsManager not provided for event mode"))?;
             let subscriber = super::EventSubscriber::new(
-                app_id.clone(), app_secret.clone(), sub_doc_id,
+                manager, sub_doc_id,
             );
             let tx = remote_tx.clone();
             tokio::spawn(async move { subscriber.run(tx).await });
