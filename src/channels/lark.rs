@@ -136,9 +136,9 @@ struct LarkMessage {
     mentions: Vec<serde_json::Value>,
 }
 
-/// Heartbeat timeout for WS connection — must be larger than ping_interval (default 120 s).
+/// Heartbeat timeout for WS connection — must be larger than ping_interval (default 30 s).
 /// If no binary frame (pong or event) is received within this window, reconnect.
-const WS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(300);
+const WS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Refresh tenant token this many seconds before the announced expiry.
 const LARK_TOKEN_REFRESH_SKEW: Duration = Duration::from_secs(120);
 /// Fallback tenant token TTL when `expire`/`expires_in` is absent.
@@ -602,9 +602,11 @@ impl LarkChannel {
         let (mut write, mut read) = ws_stream.split();
         tracing::info!("Lark: WS connected (service_id={service_id})");
 
-        let mut ping_secs = client_config.ping_interval.unwrap_or(120).max(10);
+        let mut ping_secs = client_config.ping_interval.unwrap_or(30).max(10);
         let mut hb_interval = tokio::time::interval(Duration::from_secs(ping_secs));
-        let mut timeout_check = tokio::time::interval(Duration::from_secs(10));
+        // Exponential backoff for timeout checks: 0.5s → 10s
+        let mut timeout_backoff = Duration::from_millis(500);
+        const TIMEOUT_BACKOFF_MAX: Duration = Duration::from_secs(10);
         hb_interval.tick().await; // consume immediate tick
 
         let mut seq: u64 = 0;
@@ -655,11 +657,13 @@ impl LarkChannel {
                     frag_cache.retain(|_, (_, ts)| *ts > cutoff);
                 }
 
-                _ = timeout_check.tick() => {
+                _ = tokio::time::sleep(timeout_backoff) => {
                     if last_recv.elapsed() > WS_HEARTBEAT_TIMEOUT {
                         tracing::warn!("Lark: heartbeat timeout, reconnecting");
                         break;
                     }
+                    // Exponential backoff: double until cap
+                    timeout_backoff = (timeout_backoff * 2).min(TIMEOUT_BACKOFF_MAX);
                 }
 
                 msg = read.next() => {
@@ -667,6 +671,7 @@ impl LarkChannel {
                         Some(Ok(ws_msg)) => {
                             if should_refresh_last_recv(&ws_msg) {
                                 last_recv = Instant::now();
+                                timeout_backoff = Duration::from_millis(500); // reset backoff on activity
                             }
                             match ws_msg {
                                 WsMsg::Binary(b) => b,

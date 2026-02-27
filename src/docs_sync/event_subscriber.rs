@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 const FEISHU_WS_BASE_URL: &str = "https://open.feishu.cn";
 
 /// Heartbeat timeout — reconnect if no binary frame within this window.
-const WS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(300);
+const WS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
 // ── pbbp2.proto frame codec (duplicated from lark.rs per rule-of-three) ──
 
@@ -183,9 +183,11 @@ impl EventSubscriber {
         let (mut write, mut read) = ws_stream.split();
         tracing::info!("docs_sync: WS connected (service_id={service_id})");
 
-        let mut ping_secs = client_config.ping_interval.unwrap_or(120).max(10);
+        let mut ping_secs = client_config.ping_interval.unwrap_or(30).max(10);
         let mut hb_interval = tokio::time::interval(Duration::from_secs(ping_secs));
-        let mut timeout_check = tokio::time::interval(Duration::from_secs(10));
+        // Exponential backoff for timeout checks: 0.5s → 10s
+        let mut timeout_backoff = Duration::from_millis(500);
+        const TIMEOUT_BACKOFF_MAX: Duration = Duration::from_secs(10);
         hb_interval.tick().await;
 
         let mut seq: u64 = 0;
@@ -234,17 +236,20 @@ impl EventSubscriber {
                     let cutoff = Instant::now().checked_sub(Duration::from_secs(300)).unwrap_or(Instant::now());
                     frag_cache.retain(|_, (_, ts)| *ts > cutoff);
                 }
-                _ = timeout_check.tick() => {
+                _ = tokio::time::sleep(timeout_backoff) => {
                     if last_recv.elapsed() > WS_HEARTBEAT_TIMEOUT {
                         tracing::warn!("docs_sync: heartbeat timeout, reconnecting");
                         break;
                     }
+                    // Exponential backoff: double until cap
+                    timeout_backoff = (timeout_backoff * 2).min(TIMEOUT_BACKOFF_MAX);
                 }
                 msg = read.next() => {
                     let raw = match msg {
                         Some(Ok(ws_msg)) => {
                             if matches!(ws_msg, WsMsg::Binary(_) | WsMsg::Ping(_) | WsMsg::Pong(_)) {
                                 last_recv = Instant::now();
+                                timeout_backoff = Duration::from_millis(500); // reset backoff on activity
                             }
                             match ws_msg {
                                 WsMsg::Binary(b) => b,
