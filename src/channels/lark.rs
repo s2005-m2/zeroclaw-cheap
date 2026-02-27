@@ -737,11 +737,8 @@ impl LarkChannel {
 
                     // Fragment reassembly
                     let sum = if sum == 0 { 1 } else { sum };
-                    let payload: Vec<u8> = if sum == 1 || msg_id.is_empty() {
+                    let payload: Vec<u8> = if sum == 1 || msg_id.is_empty() || seq_num >= sum {
                         frame.payload.clone().unwrap_or_default()
-                    } else if seq_num >= sum {
-                        tracing::warn!("Lark: invalid fragment seq={seq_num} >= sum={sum}, discarding");
-                        continue;
                     } else {
                         let entry = frag_cache.entry(msg_id.clone())
                             .or_insert_with(|| (vec![None; sum], Instant::now()));
@@ -893,7 +890,7 @@ impl LarkChannel {
                             overflow.push_back(msg);
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
+                    }
             }
         }
         Ok(())
@@ -2954,4 +2951,5 @@ mod tests {
         assert_eq!(removed, Some("card_typing_1".to_string()));
         assert!(ch.typing_card_ids.lock().unwrap().is_empty());
     }
+}
 }
