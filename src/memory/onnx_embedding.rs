@@ -1,4 +1,4 @@
-#![cfg(feature = "local-embedding")]
+#![cfg(feature = "local-models")]
 
 use std::path::Path;
 

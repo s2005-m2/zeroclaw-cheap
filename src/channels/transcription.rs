@@ -3,7 +3,9 @@ use reqwest::multipart::{Form, Part};
 
 use crate::config::TranscriptionConfig;
 
-#[cfg(feature = "local-transcription")]
+#[cfg(feature = "local-models")]
+use std::sync::Mutex;
+#[cfg(feature = "local-models")]
 use std::sync::OnceLock;
 
 /// Maximum upload size accepted by the Groq Whisper API (25 MB).
@@ -34,26 +36,40 @@ fn normalize_audio_filename(file_name: &str) -> String {
     }
 }
 
-#[cfg(feature = "local-transcription")]
-static RECOGNIZER: OnceLock<std::sync::Mutex<sherpa_rs::sense_voice::SenseVoiceRecognizer>> =
-    OnceLock::new();
+#[cfg(feature = "local-models")]
+use crate::channels::ort_transcription;
 
-#[cfg(feature = "local-transcription")]
+#[cfg(feature = "local-models")]
+struct SenseVoiceState {
+    session: ort::session::Session,
+    metadata: ort_transcription::SenseVoiceMetadata,
+    tokens: std::collections::HashMap<i64, String>,
+}
+
+#[cfg(feature = "local-models")]
+static SENSEVOICE: OnceLock<Mutex<SenseVoiceState>> = OnceLock::new();
+
+#[cfg(feature = "local-models")]
 fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<String> {
-    let recognizer = RECOGNIZER.get_or_init(|| {
+    let state = SENSEVOICE.get_or_init(|| {
         let model_dir = std::path::Path::new(&config.model);
-        let sv_config = sherpa_rs::sense_voice::SenseVoiceConfig {
-            model: model_dir.join("model.onnx").to_string_lossy().into(),
-            tokens: model_dir.join("tokens.txt").to_string_lossy().into(),
-            num_threads: Some(2),
-            debug: false,
-            ..Default::default()
-        };
-        std::sync::Mutex::new(
-            sherpa_rs::sense_voice::SenseVoiceRecognizer::new(sv_config)
-                .expect("Failed to init SenseVoice"),
-        )
+        let session = ort::session::Session::builder()
+            .expect("failed to create ORT session builder")
+            .with_intra_threads(2)
+            .expect("failed to set intra-op threads")
+            .commit_from_file(model_dir.join("model.onnx"))
+            .expect("failed to load SenseVoice ONNX model");
+        let metadata = ort_transcription::read_model_metadata(&session)
+            .expect("failed to read SenseVoice model metadata");
+        let tokens = ort_transcription::load_tokens(&model_dir.join("tokens.txt"))
+            .expect("failed to load tokens.txt");
+        Mutex::new(SenseVoiceState {
+            session,
+            metadata,
+            tokens,
+        })
     });
+
     let reader = hound::WavReader::new(std::io::Cursor::new(audio_data))
         .context("Failed to read WAV audio")?;
     let spec = reader.spec();
@@ -61,19 +77,33 @@ fn transcribe_local(audio_data: &[u8], config: &TranscriptionConfig) -> Result<S
         reader
             .into_samples::<f32>()
             .filter_map(|s| s.ok())
+            .map(|s| s * 32768.0) // normalize_samples=0: scale to int16 range
             .collect()
     } else {
         reader
             .into_samples::<i16>()
             .filter_map(|s| s.ok())
-            .map(|s| s as f32 / i16::MAX as f32)
+            .map(|s| s as f32) // cast directly, no normalization
             .collect()
     };
-    let mut rec = recognizer
+
+    let language = config.language.as_deref().unwrap_or("auto");
+    let mut guard = state
         .lock()
         .map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
-    let result = rec.transcribe(spec.sample_rate, &samples);
-    Ok(result.text.trim().to_string())
+    let SenseVoiceState {
+        ref mut session,
+        ref metadata,
+        ref tokens,
+    } = *guard;
+    ort_transcription::transcribe_sensevoice(
+        session,
+        metadata,
+        tokens,
+        &samples,
+        spec.sample_rate,
+        language,
+    )
 }
 
 /// Transcribe audio bytes via a Whisper-compatible transcription API.
@@ -93,7 +123,7 @@ pub async fn transcribe_audio(
         );
     }
 
-    #[cfg(feature = "local-transcription")]
+    #[cfg(feature = "local-models")]
     if config.provider == "local" {
         return tokio::task::spawn_blocking({
             let data = audio_data;

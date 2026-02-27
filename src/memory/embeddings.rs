@@ -186,7 +186,7 @@ pub fn create_embedding_provider(
             let key = api_key.unwrap_or("");
             Box::new(OpenAiEmbedding::new(base_url, key, model, dims))
         }
-        #[cfg(feature = "local-embedding")]
+        #[cfg(feature = "local-models")]
         "local" | "onnx" => {
             let model_path = std::path::Path::new(model);
             match super::onnx_embedding::OnnxEmbeddingProvider::new_with_dims(model_path, dims) {

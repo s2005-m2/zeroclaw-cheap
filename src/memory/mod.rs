@@ -8,7 +8,7 @@ pub mod lancedb;
 pub mod lucid;
 pub mod markdown;
 pub mod none;
-#[cfg(feature = "local-embedding")]
+#[cfg(feature = "local-models")]
 pub mod onnx_embedding;
 #[cfg(feature = "memory-postgres")]
 pub mod postgres;

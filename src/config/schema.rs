@@ -356,7 +356,7 @@ pub struct TranscriptionConfig {
     /// Enable voice transcription for channels that support it.
     #[serde(default)]
     pub enabled: bool,
-    /// Transcription provider: "groq" (default, Whisper API) or "local" (sherpa-rs SenseVoice).
+    /// Transcription provider: "groq" (default, Whisper API) or "local" (ort SenseVoice).
     #[serde(default = "default_transcription_provider")]
     pub provider: String,
     /// Whisper API endpoint URL.

@@ -18,7 +18,7 @@ HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
 # npm China mirror (npmmirror is the standard China mirror)
 NPM_MIRROR="${NPM_MIRROR:-https://registry.npmmirror.com}"
 # Features to compile for China deployment
-CN_FEATURES="local-embedding,local-transcription,channel-lark,vpn,feishu-docs-sync"
+CN_FEATURES="local-models,channel-lark,vpn,feishu-docs-sync"
 
 SKIP_BUILD=false
 SKIP_MODELS=false
@@ -30,14 +30,14 @@ while [[ $# -gt 0 ]]; do
     --skip-build)  SKIP_BUILD=true; shift ;;
     --skip-models) SKIP_MODELS=true; shift ;;
     --model-mirror) HF_MIRROR="$2"; shift 2 ;;
-    --no-transcription) CN_FEATURES="local-embedding,channel-lark,vpn"; shift ;;
+    --no-transcription) CN_FEATURES="local-models,channel-lark,vpn"; shift ;;
     --skip-browser) SKIP_BROWSER=true; shift ;;
     -h|--help)
       echo "Usage: $0 [--skip-build] [--skip-models] [--skip-browser] [--no-transcription] [--model-mirror URL]"
       echo "  --skip-build        Skip cargo build (models only)"
       echo "  --skip-models       Skip model download (build only)"
       echo "  --skip-browser      Skip browser dependency installation"
-      echo "  --no-transcription  Exclude local-transcription feature (Windows)"
+      echo "  --no-transcription  Exclude local transcription models (Windows)"
       echo "  --model-mirror URL  HuggingFace mirror (default: https://hf-mirror.com)"
       exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -138,7 +138,7 @@ if [[ "$SKIP_MODELS" == false ]]; then
   fi
 
   # ── 2b: SenseVoice-Small (sherpa-onnx format) ──
-  if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
+  if [[ "$CN_FEATURES" == *"local-models"* ]]; then
     if [[ -f "$SENSEVOICE_DIR/model.onnx" && -f "$SENSEVOICE_DIR/tokens.txt" ]]; then
       info "SenseVoice model already exists, skipping: $SENSEVOICE_DIR"
     else
@@ -149,27 +149,6 @@ if [[ "$SKIP_MODELS" == false ]]; then
   fi
 else
   info "Skipping model download (--skip-models)"
-fi
-
-# ── Step 2.5: Install sherpa-onnx shared libs ────────────────────────────────
-# sherpa-rs copies .so files to target/release/ at build time, but cargo install
-# only moves the binary — copy shared libs so the runtime linker can find them.
-if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
-  if ! ls "$LIB_DIR"/libsherpa-onnx-c-api.so &>/dev/null; then
-    mkdir -p "$LIB_DIR"
-    for so in target/release/libsherpa-onnx-c-api.so target/release/libonnxruntime.so; do
-      [[ -f "$so" ]] && cp -f "$so" "$LIB_DIR/" && info "Installed $(basename "$so") -> $LIB_DIR/"
-    done
-  fi
-  # Register with ldconfig so zeroclaw can always find the libs
-  if command -v ldconfig &>/dev/null; then
-    echo "$LIB_DIR" | sudo tee /etc/ld.so.conf.d/zeroclaw.conf >/dev/null
-    sudo ldconfig
-    info "Registered $LIB_DIR with ldconfig"
-  else
-    export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    info "ldconfig not found — add to shell profile: export LD_LIBRARY_PATH=\"$LIB_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\""
-  fi
 fi
 
 # ── Step 2.6: Install agent-browser and Playwright browsers ──────────────────
@@ -249,7 +228,7 @@ ensure_toml_key() {
 ensure_toml_key memory embedding_provider '"local"'
 ensure_toml_key memory embedding_model '"'"$EMBEDDING_DIR"'"'
 ensure_toml_key memory embedding_dims 768
-if [[ "$CN_FEATURES" == *"local-transcription"* ]]; then
+if [[ "$CN_FEATURES" == *"local-models"* ]]; then
   ensure_toml_key transcription provider '"local"'
   ensure_toml_key transcription model '"'"$SENSEVOICE_DIR"'"'
 fi

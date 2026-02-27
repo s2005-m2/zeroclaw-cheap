@@ -29,6 +29,8 @@ pub mod matrix;
 pub mod mattermost;
 pub mod nextcloud_talk;
 pub mod nostr;
+#[cfg(feature = "local-models")]
+pub mod ort_transcription;
 pub mod qq;
 pub mod signal;
 pub mod slack;
@@ -419,7 +421,6 @@ fn channel_delivery_instructions(channel_name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-
 
 fn build_channel_system_prompt(base_prompt: &str, channel_name: &str) -> String {
     if let Some(instructions) = channel_delivery_instructions(channel_name) {

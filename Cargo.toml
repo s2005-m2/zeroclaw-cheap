@@ -165,6 +165,7 @@ pdf-extract = { version = "0.10", optional = true }
 ort = { version = "2.0.0-rc.9", optional = true, default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 tokenizers = { version = "0.21", optional = true, default-features = false, features = ["progressbar", "fancy-regex"] }
 ndarray = { version = "0.16", optional = true }
+rustfft = { version = "6", optional = true }
 
 # LanceDB embedded vector database
 lancedb = { version = "0.16", optional = true, default-features = false }
@@ -172,8 +173,7 @@ arrow-array = { version = "53", optional = true }
 arrow-schema = { version = "53", optional = true }
 futures = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
 
-# Local speech-to-text (SenseVoice via sherpa-onnx)
-sherpa-rs = { version = "0.6", optional = true, features = ["download-binaries"] }
+# Local speech-to-text (ort-based, sherpa-rs removed)
 hound = { version = "3.5", optional = true }
 
 # WhatsApp Web client (wa-rs) — optional, enable with --features whatsapp-web
@@ -220,12 +220,13 @@ landlock = ["sandbox-landlock"]
 probe = ["dep:probe-rs"]
 # rag-pdf = PDF ingestion for datasheet RAG
 rag-pdf = ["dep:pdf-extract"]
-# local-embedding = Local ONNX embedding inference (EmbeddingGemma-300m, no API key needed)
-local-embedding = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
+# local-models = Unified local ML inference (embedding + transcription via ort)
+local-models = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:rustfft", "dep:hound"]
 # memory-lancedb = LanceDB embedded vector database backend
 memory-lancedb = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
-# local-transcription = Local speech-to-text via sherpa-onnx (SenseVoice, no API key needed)
-local-transcription = ["dep:sherpa-rs", "dep:hound"]
+# Backward-compatible aliases
+local-embedding = ["local-models"]
+local-transcription = ["local-models"]
 # whatsapp-web = Native WhatsApp Web client with custom rusqlite storage backend
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost"]
 # vpn = Embedded VPN proxy via external clash process + subconverter
