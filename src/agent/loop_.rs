@@ -2849,7 +2849,7 @@ pub async fn run(
     if config.browser.enabled {
         tool_descs.push((
             "browser_open",
-            "Open approved HTTPS URLs in Brave Browser (allowlist-only, no scraping)",
+            "Open approved HTTPS URLs in Chromium (allowlist-only, no scraping)",
         ));
     }
     if config.composio.enabled {

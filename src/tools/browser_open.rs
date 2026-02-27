@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 
-/// Open approved HTTPS URLs in Brave Browser (no scraping, no DOM automation).
+/// Open approved HTTPS URLs in Chromium (no scraping, no DOM automation).
 pub struct BrowserOpenTool {
     security: Arc<SecurityPolicy>,
     allowed_domains: Vec<String>,
@@ -60,7 +60,7 @@ impl Tool for BrowserOpenTool {
     }
 
     fn description(&self) -> &str {
-        "Open an approved HTTPS URL in Brave Browser. Security constraints: allowlist-only domains, no local/private hosts, no scraping."
+        "Open an approved HTTPS URL in Chromium. Security constraints: allowlist-only domains, no local/private hosts, no scraping."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -69,7 +69,7 @@ impl Tool for BrowserOpenTool {
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "HTTPS URL to open in Brave Browser"
+                    "description": "HTTPS URL to open in Chromium"
                 }
             },
             "required": ["url"]
@@ -109,25 +109,25 @@ impl Tool for BrowserOpenTool {
             }
         };
 
-        match open_in_brave(&url).await {
+        match open_in_chromium(&url).await {
             Ok(()) => Ok(ToolResult {
                 success: true,
-                output: format!("Opened in Brave: {url}"),
+                output: format!("Opened in Chromium: {url}"),
                 error: None,
             }),
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Failed to open Brave Browser: {e}")),
+                error: Some(format!("Failed to open Chromium: {e}")),
             }),
         }
     }
 }
 
-async fn open_in_brave(url: &str) -> anyhow::Result<()> {
+async fn open_in_chromium(url: &str) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        for app in ["Brave Browser", "Brave"] {
+        for app in ["Chromium", "Google Chrome"] {
             let status = tokio::process::Command::new("open")
                 .arg("-a")
                 .arg(app)
@@ -142,14 +142,14 @@ async fn open_in_brave(url: &str) -> anyhow::Result<()> {
             }
         }
         anyhow::bail!(
-            "Brave Browser was not found (tried macOS app names 'Brave Browser' and 'Brave')"
+            "Chromium was not found (tried macOS app names 'Chromium' and 'Google Chrome')"
         );
     }
 
     #[cfg(target_os = "linux")]
     {
         let mut last_error = String::new();
-        for cmd in ["brave-browser", "brave"] {
+        for cmd in ["chromium", "chromium-browser"] {
             match tokio::process::Command::new(cmd).arg(url).status().await {
                 Ok(status) if status.success() => return Ok(()),
                 Ok(status) => {
@@ -166,7 +166,7 @@ async fn open_in_brave(url: &str) -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     {
         let status = tokio::process::Command::new("cmd")
-            .args(["/C", "start", "", "brave", url])
+            .args(["/C", "start", "", "chromium", url])
             .status()
             .await?;
 
@@ -174,7 +174,7 @@ async fn open_in_brave(url: &str) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        anyhow::bail!("cmd start brave exited with status {status}");
+        anyhow::bail!("cmd start chromium exited with status {status}");
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
