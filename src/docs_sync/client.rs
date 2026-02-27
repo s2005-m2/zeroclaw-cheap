@@ -362,4 +362,38 @@ impl FeishuDocsClient {
         }
         Ok(())
     }
+
+    /// POST /im/v1/messages — send an interactive card message to a user by open_id.
+    pub async fn send_message_card(
+        &self,
+        open_id: &str,
+        card_json: &str,
+    ) -> Result<()> {
+        let token = self.get_token().await?;
+        let url = format!(
+            "{FEISHU_BASE_URL}/im/v1/messages?receive_id_type=open_id"
+        );
+        let body = serde_json::json!({
+            "receive_id": open_id,
+            "msg_type": "interactive",
+            "content": card_json,
+        });
+        let resp = self
+            .send_with_retry(|| self.http.post(&url).bearer_auth(&token).json(&body))
+            .await?;
+        let status = resp.status();
+        let data: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            bail!("Feishu send_message_card failed: status={status}, body={data}");
+        }
+        let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            bail!("Feishu send_message_card error: {msg}");
+        }
+        Ok(())
+    }
 }

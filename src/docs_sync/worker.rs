@@ -101,6 +101,7 @@ pub async fn run(config: Config) -> Result<()> {
     }
     let (app_id, app_secret) = resolve_credentials(&config)?;
     let client = super::FeishuDocsClient::new(app_id.clone(), app_secret.clone());
+    let sharer = super::DocsSyncSharer::new(app_id.clone(), app_secret.clone(), lock_file_path(&config));
     let workspace = config.workspace_dir.clone();
     let sync_files = ds.sync_files.clone();
     let sync_interval = Duration::from_secs(ds.sync_interval_secs.max(10));
@@ -121,6 +122,7 @@ pub async fn run(config: Config) -> Result<()> {
         };
         let hash = sha256_hex(&content);
         // Resolve doc_id: lock > config.document_ids > auto-create
+        let is_new_doc = !lock.contains_key(filename);
         let doc_id = if let Some(entry) = lock.get(filename) {
             entry.doc_id.clone()
         } else if let Some(id) = ds.document_ids.get(filename) {
@@ -143,8 +145,11 @@ pub async fn run(config: Config) -> Result<()> {
         match push_single_file(&client, &doc_id, &content).await {
             Ok(()) => {
                 tracing::info!("docs_sync: pushed '{filename}' to doc {doc_id}");
-                lock.insert(filename.clone(), LockEntry { doc_id, hash });
+                lock.insert(filename.clone(), LockEntry { doc_id: doc_id.clone(), hash });
                 let _ = save_lock(&lock_path, &lock);
+                if is_new_doc {
+                    sharer.share_single_doc_with_all(filename, &doc_id).await;
+                }
             }
             Err(e) => tracing::warn!("docs_sync: push '{filename}' failed: {e}"),
         }
@@ -213,7 +218,7 @@ pub async fn run(config: Config) -> Result<()> {
                     _ => continue,
                 };
                 let hash = sha256_hex(&content);
-                // Resolve doc_id from lock; if not in lock, auto-create
+                let is_new_doc = !lock.contains_key(&filename);
                 let doc_id = if let Some(entry) = lock.get(&filename) {
                     // Hash unchanged? skip.
                     if entry.hash == hash {
@@ -239,8 +244,11 @@ pub async fn run(config: Config) -> Result<()> {
                 match push_single_file(&client, &doc_id, &content).await {
                     Ok(()) => {
                         tracing::info!("docs_sync: pushed '{filename}'");
-                        lock.insert(filename, LockEntry { doc_id, hash });
+                        lock.insert(filename.clone(), LockEntry { doc_id: doc_id.clone(), hash });
                         let _ = save_lock(&lock_path, &lock);
+                        if is_new_doc {
+                            sharer.share_single_doc_with_all(&filename, &doc_id).await;
+                        }
                     }
                     Err(e) => tracing::warn!("docs_sync: push failed: {e}"),
                 }

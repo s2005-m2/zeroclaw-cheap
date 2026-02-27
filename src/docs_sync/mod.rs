@@ -82,10 +82,16 @@ impl DocsSyncSharer {
         tracing::info!("docs_sync: sharing {doc_count} docs with user {open_id}");
 
         let mut had_failure = false;
-        for (_filename, entry) in &lock {
+        for (filename, entry) in &lock {
             let doc_id = &entry.doc_id;
-            if let Err(e) = self.client.add_permission_member(doc_id, open_id, "view").await {
+            if let Err(e) = self.client.add_permission_member(doc_id, open_id, "edit").await {
                 tracing::warn!("docs_sync: failed to share doc {doc_id} with {open_id}: {e}");
+                had_failure = true;
+                continue;
+            }
+            let card = build_share_card(filename, doc_id);
+            if let Err(e) = self.client.send_message_card(open_id, &card).await {
+                tracing::warn!("docs_sync: failed to send share card for {filename} to {open_id}: {e}");
                 had_failure = true;
             }
         }
@@ -100,4 +106,54 @@ impl DocsSyncSharer {
         }
         Ok(())
     }
+
+    /// Share a single document with all previously shared users.
+    /// Called when a new Feishu document is created for a newly synced local file.
+    pub async fn share_single_doc_with_all(&self, filename: &str, doc_id: &str) {
+        let users = load_shared_users(&self.shared_users_path);
+        if users.is_empty() {
+            return;
+        }
+        tracing::info!("docs_sync: sharing new doc {doc_id} ({filename}) with {} existing users", users.len());
+        for open_id in &users {
+            if let Err(e) = self.client.add_permission_member(doc_id, open_id, "edit").await {
+                tracing::warn!("docs_sync: failed to share doc {doc_id} with {open_id}: {e}");
+                continue;
+            }
+            let card = build_share_card(filename, doc_id);
+            if let Err(e) = self.client.send_message_card(open_id, &card).await {
+                tracing::warn!("docs_sync: failed to send share card for {filename} to {open_id}: {e}");
+            }
+        }
+    }
+}
+
+/// Build an interactive card JSON string for a document share notification.
+fn build_share_card(filename: &str, doc_id: &str) -> String {
+    let doc_url = format!("https://feishu.cn/docx/{doc_id}");
+    let card = serde_json::json!({
+        "schema": "2.0",
+        "header": {
+            "title": { "tag": "plain_text", "content": "📄 ZeroClaw 文档已共享" },
+            "template": "blue"
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": format!("文件 **{filename}** 已同步到飞书文档，你拥有可编辑权限。")
+                },
+                {
+                    "tag": "action",
+                    "actions": [{
+                        "tag": "button",
+                        "text": { "tag": "plain_text", "content": "打开文档" },
+                        "type": "primary",
+                        "url": doc_url
+                    }]
+                }
+            ]
+        }
+    });
+    card.to_string()
 }
