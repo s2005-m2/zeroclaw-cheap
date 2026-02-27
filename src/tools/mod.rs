@@ -422,6 +422,14 @@ pub fn all_tools_with_runtime(
         }
     }
 
+    // Register hook_write tool when hooks are enabled
+    if root_config.hooks.enabled {
+        tool_arcs.push(Arc::new(HookWriteTool::new(
+            root_config.hooks.clone(),
+            workspace_dir.to_path_buf(),
+        )));
+    }
+
     boxed_registry_from_arcs(tool_arcs)
 }
 

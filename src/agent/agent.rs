@@ -42,6 +42,7 @@ pub struct Agent {
     mcp_generation: u64,
     mcp_cached_context: String,
     hook_runner: Arc<crate::hooks::HookRunner>,
+    shared_skills: Option<Arc<tokio::sync::RwLock<crate::skills::SkillsState>>>,
     #[cfg(feature = "feishu-docs-sync")]
     docs_sync_config: Option<crate::config::DocsSyncConfig>,
 }
@@ -67,6 +68,7 @@ pub struct AgentBuilder {
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
     mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
+    shared_skills: Option<Arc<tokio::sync::RwLock<crate::skills::SkillsState>>>,
     #[cfg(feature = "feishu-docs-sync")]
     docs_sync_config: Option<crate::config::DocsSyncConfig>,
 }
@@ -94,6 +96,7 @@ impl AgentBuilder {
             mcp_registry: None,
             mcp_pending_configs: Vec::new(),
             hook_runner: None,
+            shared_skills: None,
             #[cfg(feature = "feishu-docs-sync")]
             docs_sync_config: None,
         }
@@ -208,6 +211,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn shared_skills(mut self, state: Arc<tokio::sync::RwLock<crate::skills::SkillsState>>) -> Self {
+        self.shared_skills = Some(state);
+        self
+    }
+
     #[cfg(feature = "feishu-docs-sync")]
     pub fn docs_sync_config(mut self, config: crate::config::DocsSyncConfig) -> Self {
         self.docs_sync_config = Some(config);
@@ -263,6 +271,7 @@ impl AgentBuilder {
             hook_runner: self
                 .hook_runner
                 .unwrap_or_else(|| Arc::new(crate::hooks::HookRunner::new())),
+            shared_skills: self.shared_skills,
             #[cfg(feature = "feishu-docs-sync")]
             docs_sync_config: self.docs_sync_config,
         })
@@ -342,6 +351,13 @@ impl Agent {
             None
         };
 
+        // Create shared skills state for hot-reload
+        let skills = crate::skills::load_skills_with_config(&config.workspace_dir, config);
+        let shared_skills = Arc::new(tokio::sync::RwLock::new(crate::skills::SkillsState {
+            skills: skills.clone(),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+        }));
+
         let mut tools = tools::all_tools_with_runtime(
             Arc::new(config.clone()),
             &security,
@@ -355,7 +371,7 @@ impl Agent {
             &config.agents,
             config.api_key.as_deref(),
             config,
-            None, // shared_skills
+            Some(shared_skills.clone()),
         );
 
         // Wire MCP if enabled
@@ -459,11 +475,9 @@ impl Agent {
             .classification_config(config.query_classification.clone())
             .available_hints(available_hints)
             .identity_config(config.identity.clone())
-            .skills(crate::skills::load_skills_with_config(
-                &config.workspace_dir,
-                config,
-            ))
+            .skills(skills)
             .skills_prompt_mode(config.skills.prompt_injection_mode)
+            .shared_skills(shared_skills)
             .auto_save(config.memory.auto_save);
 
         // Wire hooks if enabled (mirrors channels/mod.rs pattern)
@@ -744,6 +758,20 @@ impl Agent {
                         sys_msg.content.push_str(&self.mcp_cached_context);
                     }
                 }
+            }
+        }
+
+        // Hot-reload skills if dirty (skill_manage already called reload_skills)
+        if let Some(ref shared) = self.shared_skills {
+            let needs_reload = shared
+                .read()
+                .await
+                .dirty
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if needs_reload {
+                let state = shared.write().await;
+                state.dirty.store(false, std::sync::atomic::Ordering::Relaxed);
+                self.skills = state.skills.clone();
             }
         }
 
