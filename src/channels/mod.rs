@@ -3350,7 +3350,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         .max(DEFAULT_CHANNEL_MAX_BACKOFF_SECS);
 
     // Single message bus — all channels send messages here
-    let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(100);
+    let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(256);
 
     // Spawn a listener for each channel
     let mut handles = Vec::new();
