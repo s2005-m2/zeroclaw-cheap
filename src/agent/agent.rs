@@ -342,7 +342,7 @@ impl Agent {
             None
         };
 
-        let tools = tools::all_tools_with_runtime(
+        let mut tools = tools::all_tools_with_runtime(
             Arc::new(config.clone()),
             &security,
             runtime,
@@ -363,6 +363,17 @@ impl Agent {
             let config_path = config.mcp.config_path.as_deref().unwrap_or(".mcp.json");
             let mcp_json_path = config.workspace_dir.join(config_path);
 
+            // Auto-create .mcp.json with empty servers when missing
+            if !mcp_json_path.exists() {
+                let empty_config = r#"{"mcpServers": {}}"#;
+                match std::fs::write(&mcp_json_path, empty_config) {
+                    Ok(()) => tracing::info!("MCP: created empty {:?}", mcp_json_path),
+                    Err(e) => {
+                        tracing::warn!("MCP: failed to create {:?}: {}", mcp_json_path, e);
+                    }
+                }
+            }
+
             if mcp_json_path.exists() {
                 let builtin_names: std::collections::HashSet<String> =
                     tools.iter().map(|t| t.name().to_string()).collect();
@@ -370,6 +381,13 @@ impl Agent {
                     zeroclaw_mcp::registry::McpRegistry::new(config.mcp.tool_cap, builtin_names)
                         .with_config_path(mcp_json_path.clone()),
                 );
+
+                // Register mcp_manage tool so the agent can manage MCP servers
+                let autonomy_level = security.autonomy;
+                tools.push(Box::new(crate::tools::mcp_manage::McpManageTool::new(
+                    Arc::clone(&registry),
+                    autonomy_level,
+                )));
 
                 // Parse configs now, connect async on first turn()
                 let pending = match zeroclaw_mcp::config::parse_mcp_config(&mcp_json_path) {
@@ -389,7 +407,6 @@ impl Agent {
                 };
                 (Some(registry), pending)
             } else {
-                tracing::debug!("No .mcp.json found at {:?}, MCP disabled", mcp_json_path);
                 (None, Vec::new())
             }
         } else {
