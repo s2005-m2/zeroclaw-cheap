@@ -3,7 +3,7 @@ use crate::config::StreamMode;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -636,8 +636,21 @@ impl LarkChannel {
         // message_id → (fragment_slots, created_at) for multi-part reassembly
         type FragEntry = (Vec<Option<Vec<u8>>>, Instant);
         let mut frag_cache: HashMap<String, FragEntry> = HashMap::new();
+        // Overflow buffer for messages that couldn't be sent (channel full).
+        // Drained at the top of each loop iteration to avoid blocking the WS read loop.
+        const OVERFLOW_CAP: usize = 20;
+        let mut overflow: VecDeque<ChannelMessage> = VecDeque::new();
 
         loop {
+            // Drain overflow buffer first (non-blocking)
+            while let Some(msg) = overflow.front() {
+                match tx.try_send(msg.clone()) {
+                    Ok(()) => { overflow.pop_front(); }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                }
+            }
+
             tokio::select! {
                 biased;
 
@@ -869,7 +882,17 @@ impl LarkChannel {
                     };
 
                     tracing::debug!("Lark WS: message in {}", lark_msg.chat_id);
-                    if tx.send(channel_msg).await.is_err() { break; }
+                    match tx.try_send(channel_msg) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                            if overflow.len() >= OVERFLOW_CAP {
+                                tracing::warn!("Lark WS: overflow buffer full, dropping oldest message");
+                                overflow.pop_front();
+                            }
+                            tracing::warn!("Lark WS: channel full, buffering message for {}", msg.sender);
+                            overflow.push_back(msg);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                 }
             }
         }
