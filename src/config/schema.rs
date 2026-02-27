@@ -2096,6 +2096,12 @@ pub struct AutonomyConfig {
     #[serde(default)]
     pub shell_env_passthrough: Vec<String>,
 
+    /// Pass the entire parent environment to shell subprocesses instead of
+    /// clearing and allowlisting. **Dangerous:** this may leak API keys and
+    /// secrets to child processes. Only enable on fully trusted devices.
+    #[serde(default)]
+    pub shell_env_passthrough_all: bool,
+
     /// Tools that never require approval (e.g. read-only tools).
     #[serde(default = "default_auto_approve")]
     pub auto_approve: Vec<String>,
@@ -2180,6 +2186,7 @@ impl Default for AutonomyConfig {
             require_approval_for_medium_risk: true,
             block_high_risk_commands: true,
             shell_env_passthrough: vec![],
+            shell_env_passthrough_all: false,
             auto_approve: default_auto_approve(),
             always_ask: default_always_ask(),
             allowed_roots: Vec::new(),
@@ -4950,6 +4957,7 @@ default_temperature = 0.7
                 require_approval_for_medium_risk: false,
                 block_high_risk_commands: true,
                 shell_env_passthrough: vec!["DATABASE_URL".into()],
+                shell_env_passthrough_all: false,
                 auto_approve: vec!["file_read".into()],
                 always_ask: vec![],
                 allowed_roots: vec![],

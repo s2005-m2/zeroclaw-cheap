@@ -146,11 +146,15 @@ impl Tool for ShellTool {
                 });
             }
         };
-        cmd.env_clear();
-
-        for var in collect_allowed_shell_env_vars(&self.security) {
-            if let Ok(val) = std::env::var(&var) {
-                cmd.env(&var, val);
+        if self.security.shell_env_passthrough_all {
+            // Dangerous: inherit full parent environment. Only when explicitly opted in.
+            tracing::warn!("shell_env_passthrough_all is enabled — full environment inherited by subprocess");
+        } else {
+            cmd.env_clear();
+            for var in collect_allowed_shell_env_vars(&self.security) {
+                if let Ok(val) = std::env::var(&var) {
+                    cmd.env(&var, val);
+                }
             }
         }
 
@@ -665,6 +669,28 @@ mod tests {
         assert!(
             r2.error.as_deref().unwrap_or("").contains("Rate limit")
                 || r2.error.as_deref().unwrap_or("").contains("budget")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_passthrough_all_inherits_full_env() {
+        let _guard = EnvGuard::set("ZEROCLAW_TEST_FULL_ENV", "full-env-value-42");
+        let security = Arc::new(SecurityPolicy {
+            autonomy: AutonomyLevel::Supervised,
+            allowed_commands: vec!["env".into()],
+            workspace_dir: std::env::temp_dir(),
+            shell_env_passthrough_all: true,
+            ..SecurityPolicy::default()
+        });
+        let tool = ShellTool::new(security, test_runtime());
+        let result = tool
+            .execute(json!({"command": "env"}))
+            .await
+            .expect("env command should succeed with passthrough_all");
+        assert!(result.success);
+        assert!(
+            result.output.contains("ZEROCLAW_TEST_FULL_ENV=full-env-value-42"),
+            "shell_env_passthrough_all should inherit full parent environment"
         );
     }
 }
