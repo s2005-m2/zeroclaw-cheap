@@ -110,14 +110,60 @@ fi
 
 # ── Step 1.5: Install clash-rs (VPN proxy backend) ────────────────────────────
 # The vpn feature requires the `clash` binary in PATH.
-# cargo install from crates.io — no GitHub download needed.
+# Download from GitHub releases since it's not on crates.io.
 if [[ "$CN_FEATURES" == *"vpn"* ]]; then
   if command -v clash &>/dev/null || command -v clash-rs &>/dev/null; then
     info "clash-rs already installed, skipping"
   else
-    info "Installing clash-rs via cargo (this may take a few minutes)..."
-    cargo install clash-rs --locked \
-      || err "Failed to install clash-rs via cargo"
+    info "Installing clash-rs from GitHub releases..."
+    
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    
+    case "$OS" in
+      linux)
+        case "$ARCH" in
+          x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
+          aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+          armv7l) TARGET="armv7-unknown-linux-gnueabihf" ;;
+          *) err "Unsupported architecture for clash-rs: $ARCH" ;;
+        esac
+        ;;
+      darwin)
+        case "$ARCH" in
+          x86_64) TARGET="x86_64-apple-darwin" ;;
+          aarch64|arm64) TARGET="aarch64-apple-darwin" ;;
+          *) err "Unsupported architecture for clash-rs: $ARCH" ;;
+        esac
+        ;;
+      msys*|cygwin*|mingw*)
+        case "$ARCH" in
+          x86_64) TARGET="x86_64-pc-windows-msvc.exe" ;;
+          aarch64|arm64) TARGET="aarch64-pc-windows-msvc.exe" ;;
+          *) err "Unsupported architecture for clash-rs: $ARCH" ;;
+        esac
+        ;;
+      *) err "Unsupported OS for clash-rs: $OS" ;;
+    esac
+    
+    CLASH_URL="https://github.com/Watfaq/clash-rs/releases/latest/download/clash-${TARGET}"
+    CLASH_BIN_DIR="$HOME/.cargo/bin"
+    mkdir -p "$CLASH_BIN_DIR"
+    
+    if [[ "$TARGET" == *".exe" ]]; then
+      CLASH_BIN="$CLASH_BIN_DIR/clash-rs.exe"
+    else
+      CLASH_BIN="$CLASH_BIN_DIR/clash-rs"
+    fi
+    
+    info "Downloading clash-rs for $TARGET..."
+    curl -fSL --retry 3 --connect-timeout 30 -o "$CLASH_BIN" "$CLASH_URL" \
+      || err "Failed to download clash-rs from $CLASH_URL"
+    
+    chmod +x "$CLASH_BIN"
+    
+    export PATH="$CLASH_BIN_DIR:$PATH"
+    
     command -v clash-rs &>/dev/null && info "clash-rs installed: $(clash-rs --version 2>/dev/null || echo 'ok')" \
       || err "clash-rs installation failed"
   fi
