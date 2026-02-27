@@ -1,0 +1,2 @@
+=== grep -in brave src/tools/browser_open.rs ===
+Zero matches (PASS)

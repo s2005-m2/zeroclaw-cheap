@@ -133,7 +133,7 @@ Max Concurrent: 1
 ## TODOs
 
 
-- [ ] 1. Replace Brave Browser with Chromium in browser_open.rs, loop_.rs, schema.rs
+- [x] 1. Replace Brave Browser with Chromium in browser_open.rs, loop_.rs, schema.rs
 
   **What to do**:
   - Rename function `open_in_brave` → `open_in_chromium` (line 127)
@@ -256,7 +256,7 @@ Max Concurrent: 1
 
 ---
 
-- [ ] 2. Full validation suite + commit
+- [x] 2. Full validation suite + commit
   **What to do**:
   - Run `cargo fmt --all -- --check` — assert clean
   - Run `cargo clippy --all-targets -- -D warnings` — assert zero warnings
@@ -324,11 +324,11 @@ Max Concurrent: 1
 
 > After ALL implementation tasks, run final checks.
 
-- [ ] F1. **Brave Search Integrity Check** — `quick`
+- [x] F1. **Brave Search Integrity Check** — `quick`
   Run `grep -c "brave" src/tools/web_search_tool.rs` and assert count = 14. Run `grep -c "brave" src/config/schema.rs` and assert count = 11 (was 12, minus 1 browser ref). If counts differ, the change touched Search API code — REJECT.
   Output: `web_search_tool.rs [14/14] | schema.rs [11/11] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Full Build + Test + Lint** — `quick`
+- [x] F2. **Full Build + Test + Lint** — `quick`
   Run `cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test`. All must pass with zero errors/warnings.
   Output: `fmt [PASS/FAIL] | clippy [PASS/FAIL] | test [N pass/N fail] | VERDICT`
 

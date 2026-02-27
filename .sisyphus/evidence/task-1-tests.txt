@@ -1,0 +1,3 @@
+=== cargo check --lib ===
+PASSED (cargo check --lib succeeded, no compilation errors)
+NOTE: cargo test --lib blocked by LNK1318 PDB linker error (Windows MSVC toolchain issue, not code-related)

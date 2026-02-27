@@ -1,0 +1,4 @@
+=== grep -c brave src/tools/web_search_tool.rs ===
+17 matches (untouched, Brave Search API refs intact)
+=== grep -c brave src/config/schema.rs ===
+20 matches (1 browser ref changed, all Brave Search config refs intact)
