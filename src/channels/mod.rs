@@ -3179,7 +3179,23 @@ pub async fn start_channels(config: Config) -> Result<()> {
     if config.browser.enabled {
         tool_descs.push((
             "browser_open",
-            "Open approved HTTPS URLs in Brave Browser (allowlist-only, no scraping)",
+            "Open approved HTTPS URLs in a headless browser (allowlist-only). Use for navigating web pages.",
+        ));
+        tool_descs.push((
+            "browser",
+            "Full browser automation: open, screenshot, snapshot (accessibility tree), click, type, fill, scroll, hover, press, find, get_text, get_title, get_url, wait, close. Screenshots are saved inside the workspace directory only (path-restricted by security policy). Use when: interacting with web pages, capturing page content, filling forms. Do NOT use for raw API calls or data fetching — use http_request instead.",
+        ));
+    }
+    if config.http_request.enabled {
+        tool_descs.push((
+            "http_request",
+            "Make HTTP requests (GET/POST/PUT/DELETE) to allowed domains. Use when: calling APIs, fetching data, checking endpoints. Preferred over browser for raw data retrieval.",
+        ));
+    }
+    if config.web_search.enabled {
+        tool_descs.push((
+            "web_search",
+            "Search the web via search engine API. Use when: looking up information, finding answers, researching topics. Returns search result snippets.",
         ));
     }
     if config.composio.enabled {
