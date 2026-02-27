@@ -18,7 +18,7 @@ HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
 # npm China mirror (npmmirror is the standard China mirror)
 NPM_MIRROR="${NPM_MIRROR:-https://registry.npmmirror.com}"
 # Features to compile for China deployment
-CN_FEATURES="local-embedding,memory-lancedb,local-transcription,channel-lark,vpn,feishu-docs-sync"
+CN_FEATURES="local-embedding,local-transcription,channel-lark,vpn,feishu-docs-sync"
 
 SKIP_BUILD=false
 SKIP_MODELS=false
@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
     --skip-build)  SKIP_BUILD=true; shift ;;
     --skip-models) SKIP_MODELS=true; shift ;;
     --model-mirror) HF_MIRROR="$2"; shift 2 ;;
-    --no-transcription) CN_FEATURES="local-embedding,memory-lancedb,channel-lark,vpn"; shift ;;
+    --no-transcription) CN_FEATURES="local-embedding,channel-lark,vpn"; shift ;;
     --skip-browser) SKIP_BROWSER=true; shift ;;
     -h|--help)
       echo "Usage: $0 [--skip-build] [--skip-models] [--skip-browser] [--no-transcription] [--model-mirror URL]"
