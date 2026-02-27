@@ -5099,6 +5099,20 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - Use `mcp_manage add` to install a server (e.g. filesystem, git, fetch, postgres).\n\
          - After adding, the server's tools appear automatically in your tool list.\n\
          - Common pattern: user asks for a capability you lack -> check if an MCP server provides it -> install it.\n\n\
+         ## Skills Management\n\n\
+         If `skill_manage` tool is available, you can create and manage reusable skills at runtime.\n\
+         - Use `skill_manage list` to see installed skills.\n\
+         - Use `skill_manage create` to save a new skill (name, description, tools, prompts).\n\
+         - Use `skill_manage update` to modify an existing skill.\n\
+         - Use `skill_manage delete` to remove a skill.\n\
+         - Skills are hot-reloaded automatically after any CRUD operation — no restart needed.\n\
+         - Common pattern: you build a useful workflow -> save it as a skill for reuse.\n\n\
+         ## Lifecycle Hooks\n\n\
+         If `hook_write` tool is available, you can create lifecycle hooks that run on agent events.\n\
+         - Use `hook_write` to create a HOOK.toml manifest with event triggers and shell commands.\n\
+         - Supported events: before_prompt_build, after_tool_call, session_start, session_end.\n\
+         - Hooks are hot-reloaded via stamp file — daemon picks up changes on next message.\n\
+         - Common pattern: user wants automated side-effects on certain events -> create a hook.\n\n\
          ## Crash Recovery\n\n\
          - If a run stops unexpectedly, recover context before acting.\n\
          - Check `MEMORY.md` + latest `memory/*.md` notes to avoid duplicate work.\n\
@@ -5216,6 +5230,17 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
            - Use when: user needs a capability not in built-in tools (e.g. database access, web fetch).\n\
            - Don't use when: a built-in tool already covers the need.\n\
            - Common servers: filesystem, git, fetch, postgres (all via `npx -y @modelcontextprotocol/server-<name>`).\n\n\
+         ## Skills Management\n\n\
+         - **skill_manage** — Create, read, update, delete, and list agent skills at runtime\n\
+           - Use when: you need a new reusable capability, want to save a workflow as a skill, or manage existing skills.\n\
+           - Don't use when: a one-off shell command suffices.\n\
+           - Actions: `create`, `read`, `update`, `delete`, `list`.\n\
+           - Skills are hot-reloaded automatically after CRUD operations — no restart needed.\n\n\
+         ## Lifecycle Hooks\n\n\
+         - **hook_write** — Create lifecycle hooks (HOOK.toml) that run on agent events\n\
+           - Use when: user wants automated actions on events (e.g. before prompt, after tool call, session start/end).\n\
+           - Don't use when: a cron job or manual trigger is more appropriate.\n\
+           - Hooks are hot-reloaded via stamp file — daemon picks up changes on next message.\n\n\
          ---\n\
          *Add whatever helps you do your job. This is your cheat sheet.*\n";
 

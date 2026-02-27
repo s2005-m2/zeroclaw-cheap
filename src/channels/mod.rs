@@ -404,9 +404,22 @@ fn channel_delivery_instructions(channel_name: &str) -> Option<&'static str> {
              - Keep normal text outside markers and never wrap markers in code fences.\n\
              - Use tool results silently: answer the latest user message directly, and do not narrate delayed/internal tool execution bookkeeping.",
         ),
+        "lark" | "feishu" => Some(
+            "When responding on Feishu/Lark:\n\
+             - You CAN send files, images, audio, and video to the user.\n\
+             - For media attachments use markers: [IMAGE:<path-or-url>], [DOCUMENT:<path-or-url>], [VIDEO:<path-or-url>], [AUDIO:<path-or-url>]\n\
+             - Paths can be local files (e.g. /tmp/screenshot.png) or HTTPS URLs\n\
+             - Maximum file size is 20 MB per attachment\n\
+             - Keep normal text outside markers and never wrap markers in code fences.\n\
+             - Use **bold** for key terms and section titles\n\
+             - Use `backticks` for inline code, commands, or technical terms\n\
+             - Be concise and direct. Skip filler phrases.\n\
+             - Use tool results silently: answer the user directly, do not narrate internal tool execution.",
+        ),
         _ => None,
     }
 }
+
 
 fn build_channel_system_prompt(base_prompt: &str, channel_name: &str) -> String {
     if let Some(instructions) = channel_delivery_instructions(channel_name) {
@@ -3189,6 +3202,31 @@ pub async fn start_channels(config: Config) -> Result<()> {
             "Delegate a subtask to a specialized agent. Use when: a task benefits from a different model (e.g. fast summarization, deep reasoning, code generation). The sub-agent runs a single prompt and returns its response.",
         ));
     }
+
+    #[cfg(feature = "vpn")]
+    if config.vpn.enabled {
+        tool_descs.push((
+            "vpn_control",
+            "Manage VPN proxy (Clash-based). Use when: API calls fail due to network restrictions. Actions: status, enable, disable, list_nodes, switch_node, refresh, add_bypass.",
+        ));
+    }
+    if config.mcp.enabled {
+        tool_descs.push((
+            "mcp_manage",
+            "Install/remove MCP servers for extended capabilities. Actions: list, add, remove. Use when: user needs a capability not in built-in tools.",
+        ));
+    }
+    if config.hooks.enabled {
+        tool_descs.push((
+            "hook_write",
+            "Create lifecycle hooks (HOOK.toml) that run on agent events. Use when: user wants automated actions on events (before_prompt_build, after_tool_call, session_start, session_end).",
+        ));
+    }
+    // skill_manage is always available when shared_skills is wired
+    tool_descs.push((
+        "skill_manage",
+        "Create, read, update, delete, and list agent skills at runtime. Skills are hot-reloaded automatically. Use when: saving a reusable workflow or managing existing skills.",
+    ));
 
     // Filter out tools excluded for non-CLI channels so the system prompt
     // does not advertise them for channel-driven runs.
