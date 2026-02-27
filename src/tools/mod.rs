@@ -275,6 +275,7 @@ pub fn all_tools_with_runtime(
                 max_coordinate_x: browser_config.computer_use.max_coordinate_x,
                 max_coordinate_y: browser_config.computer_use.max_coordinate_y,
             },
+            security.workspace_dir.clone(),
         )));
     }
 

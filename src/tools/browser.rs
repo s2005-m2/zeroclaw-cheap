@@ -67,6 +67,7 @@ pub struct BrowserTool {
     native_webdriver_url: String,
     native_chrome_path: Option<String>,
     computer_use: ComputerUseConfig,
+    workspace_dir: std::path::PathBuf,
     #[cfg(feature = "browser-native")]
     native_state: tokio::sync::Mutex<native_backend::NativeBrowserState>,
 }
@@ -202,6 +203,7 @@ impl BrowserTool {
         allowed_domains: Vec<String>,
         session_name: Option<String>,
     ) -> Self {
+        let ws_dir = security.workspace_dir.clone();
         Self::new_with_backend(
             security,
             allowed_domains,
@@ -211,6 +213,7 @@ impl BrowserTool {
             "http://127.0.0.1:9515".into(),
             None,
             ComputerUseConfig::default(),
+            ws_dir,
         )
     }
 
@@ -224,6 +227,7 @@ impl BrowserTool {
         native_webdriver_url: String,
         native_chrome_path: Option<String>,
         computer_use: ComputerUseConfig,
+        workspace_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             security,
@@ -234,6 +238,7 @@ impl BrowserTool {
             native_webdriver_url,
             native_chrome_path,
             computer_use,
+            workspace_dir,
             #[cfg(feature = "browser-native")]
             native_state: tokio::sync::Mutex::new(native_backend::NativeBrowserState::default()),
         }
@@ -436,9 +441,35 @@ impl BrowserTool {
         Ok(())
     }
 
+    /// Validate that a screenshot output path stays within the workspace.
+    fn validate_screenshot_path(&self, path: &str) -> anyhow::Result<String> {
+        if !self.security.is_path_allowed(path) {
+            anyhow::bail!("Screenshot path rejected by security policy: {path}");
+        }
+        // Resolve relative paths against workspace_dir so we can check symlink escapes.
+        let resolved = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            self.workspace_dir.join(path)
+        };
+        // Canonicalize if the parent directory already exists (best-effort).
+        let canonical = resolved.parent()
+            .and_then(|p| p.canonicalize().ok())
+            .map(|p| p.join(resolved.file_name().unwrap_or_default()))
+            .unwrap_or(resolved);
+        if !self.security.is_resolved_path_allowed(&canonical) {
+            anyhow::bail!(
+                "Screenshot path escapes workspace: {}",
+                self.security.resolved_path_violation_message(&canonical)
+            );
+        }
+        Ok(canonical.to_string_lossy().into_owned())
+    }
+
     /// Execute an agent-browser command
     async fn run_command(&self, args: &[&str]) -> anyhow::Result<AgentBrowserResponse> {
         let mut cmd = Command::new("agent-browser");
+        cmd.current_dir(&self.workspace_dir);
 
         // Add session if configured
         if let Some(ref session) = self.session_name {
@@ -551,8 +582,10 @@ impl BrowserTool {
 
             BrowserAction::Screenshot { path, full_page } => {
                 let mut args = vec!["screenshot"];
+                let validated;
                 if let Some(ref p) = path {
-                    args.push(p);
+                    validated = self.validate_screenshot_path(p)?;
+                    args.push(&validated);
                 }
                 if full_page {
                     args.push("--full");
@@ -1224,10 +1257,11 @@ mod native_backend {
                     });
 
                     if let Some(path_str) = path {
-                        tokio::fs::write(&path_str, &png)
+                        let safe_path = self.validate_screenshot_path(&path_str)?;
+                        tokio::fs::write(&safe_path, &png)
                             .await
-                            .with_context(|| format!("Failed to write screenshot to {path_str}"))?;
-                        payload["path"] = Value::String(path_str);
+                            .with_context(|| format!("Failed to write screenshot to {safe_path}"))?;
+                        payload["path"] = Value::String(safe_path);
                     } else {
                         payload["png_base64"] =
                             Value::String(base64::engine::general_purpose::STANDARD.encode(&png));
@@ -1435,6 +1469,8 @@ mod native_backend {
             if headless {
                 args.push(Value::String("--headless=new".to_string()));
                 args.push(Value::String("--disable-gpu".to_string()));
+                args.push(Value::String("--window-size=1280,720".to_string()));
+                args.push(Value::String("--no-sandbox".to_string()));
             }
 
             if !args.is_empty() {
@@ -2259,6 +2295,7 @@ mod tests {
             "http://127.0.0.1:9515".into(),
             None,
             ComputerUseConfig::default(),
+            std::path::PathBuf::from("."),
         );
         assert_eq!(tool.configured_backend().unwrap(), BrowserBackendKind::Auto);
     }
@@ -2275,6 +2312,7 @@ mod tests {
             "http://127.0.0.1:9515".into(),
             None,
             ComputerUseConfig::default(),
+            std::path::PathBuf::from("."),
         );
         assert_eq!(
             tool.configured_backend().unwrap(),
@@ -2297,6 +2335,7 @@ mod tests {
                 endpoint: "http://computer-use.example.com/v1/actions".into(),
                 ..ComputerUseConfig::default()
             },
+            std::path::PathBuf::from("."),
         );
 
         assert!(tool.computer_use_endpoint_url().is_err());
@@ -2318,6 +2357,7 @@ mod tests {
                 allow_remote_endpoint: true,
                 ..ComputerUseConfig::default()
             },
+            std::path::PathBuf::from("."),
         );
 
         assert!(tool.computer_use_endpoint_url().is_ok());
@@ -2339,6 +2379,7 @@ mod tests {
                 max_coordinate_y: Some(100),
                 ..ComputerUseConfig::default()
             },
+            std::path::PathBuf::from("."),
         );
 
         assert!(tool
