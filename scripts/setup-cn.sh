@@ -108,6 +108,21 @@ else
   info "Skipping build (--skip-build)"
 fi
 
+# ── Step 1.5: Install clash-rs (VPN proxy backend) ────────────────────────────
+# The vpn feature requires the `clash` binary in PATH.
+# cargo install from crates.io — no GitHub download needed.
+if [[ "$CN_FEATURES" == *"vpn"* ]]; then
+  if command -v clash &>/dev/null || command -v clash-rs &>/dev/null; then
+    info "clash-rs already installed, skipping"
+  else
+    info "Installing clash-rs via cargo (this may take a few minutes)..."
+    cargo install clash-rs --locked \
+      || err "Failed to install clash-rs via cargo"
+    command -v clash-rs &>/dev/null && info "clash-rs installed: $(clash-rs --version 2>/dev/null || echo 'ok')" \
+      || err "clash-rs installation failed"
+  fi
+fi
+
 # ── Step 2: Download models ───────────────────────────────────────────────────
 if [[ "$SKIP_MODELS" == false ]]; then
   info "Using HuggingFace mirror: $HF_MIRROR"
