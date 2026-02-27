@@ -32,6 +32,7 @@ pub struct Agent {
     workspace_dir: std::path::PathBuf,
     identity_config: crate::config::IdentityConfig,
     skills: Vec<crate::skills::Skill>,
+    allowed_commands: Vec<String>,
     skills_prompt_mode: crate::config::SkillsPromptInjectionMode,
     auto_save: bool,
     history: Vec<ConversationMessage>,
@@ -61,6 +62,7 @@ pub struct AgentBuilder {
     workspace_dir: Option<std::path::PathBuf>,
     identity_config: Option<crate::config::IdentityConfig>,
     skills: Option<Vec<crate::skills::Skill>>,
+    allowed_commands: Vec<String>,
     skills_prompt_mode: Option<crate::config::SkillsPromptInjectionMode>,
     auto_save: Option<bool>,
     classification_config: Option<crate::config::QueryClassificationConfig>,
@@ -89,6 +91,7 @@ impl AgentBuilder {
             workspace_dir: None,
             identity_config: None,
             skills: None,
+            allowed_commands: Vec::new(),
             skills_prompt_mode: None,
             auto_save: None,
             classification_config: None,
@@ -166,6 +169,11 @@ impl AgentBuilder {
         self.skills = Some(skills);
         self
     }
+    pub fn allowed_commands(mut self, cmds: Vec<String>) -> Self {
+        self.allowed_commands = cmds;
+        self
+    }
+
 
     pub fn skills_prompt_mode(
         mut self,
@@ -259,6 +267,7 @@ impl AgentBuilder {
                 .unwrap_or_else(|| std::path::PathBuf::from(".")),
             identity_config: self.identity_config.unwrap_or_default(),
             skills: self.skills.unwrap_or_default(),
+            allowed_commands: self.allowed_commands,
             skills_prompt_mode: self.skills_prompt_mode.unwrap_or_default(),
             auto_save: self.auto_save.unwrap_or(false),
             history: Vec::new(),
@@ -476,6 +485,7 @@ impl Agent {
             .available_hints(available_hints)
             .identity_config(config.identity.clone())
             .skills(skills)
+            .allowed_commands(config.autonomy.allowed_commands.clone())
             .skills_prompt_mode(config.skills.prompt_injection_mode)
             .shared_skills(shared_skills)
             .auto_save(config.memory.auto_save);
@@ -545,7 +555,9 @@ impl Agent {
             #[cfg(feature = "feishu-docs-sync")]
             docs_sync_config: self.docs_sync_config.as_ref(),
         };
-        self.prompt_builder.build(&ctx)
+        let mut prompt = self.prompt_builder.build(&ctx)?;
+        crate::channels::append_unrestricted_commands_hint(&mut prompt, &self.allowed_commands);
+        Ok(prompt)
     }
 
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {

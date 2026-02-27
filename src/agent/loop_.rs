@@ -2927,6 +2927,7 @@ pub async fn run(
     if !native_tools {
         system_prompt.push_str(&build_tool_instructions(&tools_registry));
     }
+    crate::channels::append_unrestricted_commands_hint(&mut system_prompt, &config.autonomy.allowed_commands);
 
     // ── Approval manager (supervised mode) ───────────────────────
     let approval_manager = if interactive {
@@ -3152,6 +3153,7 @@ pub async fn run(
                     if !native_tools {
                         new_prompt.push_str(&build_tool_instructions(&tools_registry));
                     }
+                    crate::channels::append_unrestricted_commands_hint(&mut new_prompt, &config.autonomy.allowed_commands);
                     // Update system message in history
                     if !history.is_empty() {
                         history[0] = ChatMessage::system(&new_prompt);
@@ -3346,6 +3348,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
     if !native_tools {
         system_prompt.push_str(&build_tool_instructions(&tools_registry));
     }
+    crate::channels::append_unrestricted_commands_hint(&mut system_prompt, &config.autonomy.allowed_commands);
 
     let mem_context = build_context(mem.as_ref(), message, config.memory.min_relevance_score).await;
     let rag_limit = if config.agent.compact_context { 2 } else { 5 };

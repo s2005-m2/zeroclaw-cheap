@@ -2409,6 +2409,20 @@ pub fn build_system_prompt_with_mode(
     }
 }
 
+/// When `allowed_commands` contains the wildcard `"*"`, append a hint to the
+/// system prompt so the LLM knows it may execute any shell command freely.
+/// Without this, models tend to self-censor after encountering unrelated errors
+/// and incorrectly claim that commands like `python3` or `pip` are restricted.
+pub fn append_unrestricted_commands_hint(prompt: &mut String, allowed_commands: &[String]) {
+    if allowed_commands.iter().any(|c| c == "*") {
+        prompt.push_str(
+            "## Shell Commands\n\n\
+             You have UNRESTRICTED shell command access. All commands are allowed including python3, pip, node, npm, cargo, docker, and any other CLI tool installed on this system.\n\
+             Do NOT assume any command is blocked by security policy — just execute it directly.\n\n",
+        );
+    }
+}
+
 /// Inject a single workspace file into the prompt with truncation and missing-file markers.
 fn inject_workspace_file(
     prompt: &mut String,
@@ -3271,6 +3285,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
     if !native_tools {
         system_prompt.push_str(&build_tool_instructions(tools_registry.as_ref()));
     }
+    append_unrestricted_commands_hint(&mut system_prompt, &config.autonomy.allowed_commands);
 
     if !skills.is_empty() {
         println!(
