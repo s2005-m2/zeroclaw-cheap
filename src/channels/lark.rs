@@ -3,6 +3,7 @@ use super::traits::{Channel, ChannelMessage, SendMessage};
 use crate::config::StreamMode;
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -70,6 +71,12 @@ struct LarkMessage {
     content: String,
     #[serde(default)]
     mentions: Vec<serde_json::Value>,
+    /// Thread root message ID — present when the message is inside a thread.
+    #[serde(default)]
+    root_id: Option<String>,
+    /// Parent message ID — present when replying to a specific message.
+    #[serde(default)]
+    parent_id: Option<String>,
 }
 
 /// Feishu/Lark API business code for expired/invalid tenant access token.
@@ -201,6 +208,11 @@ pub struct LarkChannel {
     tenant_token: Arc<RwLock<Option<CachedTenantToken>>>,
     /// Dedup set: WS message_ids seen in last ~30 min to prevent double-dispatch
     ws_seen_ids: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Thread-reply dedup: (chat_id, content_hash) → (timestamp, is_thread_reply).
+    /// When a user replies in a Feishu thread with "also send to conversation" checked,
+    /// Feishu fires two events with different message_ids but identical content.
+    /// We keep the in-thread version (has root_id) and discard the forwarded copy.
+    thread_dedup: Arc<std::sync::Mutex<HashMap<(String, u64), (Instant, bool)>>>,
     /// Streaming mode for progressive draft updates via CardKit.
     stream_mode: StreamMode,
     /// Minimum interval (ms) between card updates.
@@ -254,6 +266,7 @@ impl LarkChannel {
             receive_mode: crate::config::schema::LarkReceiveMode::default(),
             tenant_token: Arc::new(RwLock::new(None)),
             ws_seen_ids: Arc::new(RwLock::new(HashMap::new())),
+            thread_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
             stream_mode: StreamMode::default(),
             draft_update_interval_ms: 500,
             card_sequence: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -625,6 +638,41 @@ impl LarkChannel {
             // Group-chat: only respond when explicitly @-mentioned
             if lark_msg.chat_type == "group" && !should_respond_in_group(&lark_msg.mentions) {
                 continue;
+            }
+
+            // Thread-reply dedup: when Feishu "also send to conversation" is checked,
+            // two events fire with different message_ids but identical content.
+            // Keep the in-thread version (has root_id) and discard the forwarded copy.
+            let is_thread_reply = lark_msg.root_id.is_some() || lark_msg.parent_id.is_some();
+            {
+                let now = Instant::now();
+                let key = (lark_msg.chat_id.clone(), content_hash(&text));
+                let mut td = self.thread_dedup.lock().unwrap();
+                // GC entries older than 30s
+                td.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(30));
+                if let Some((_, prev_is_thread)) = td.get(&key) {
+                    if *prev_is_thread {
+                        // Already processed the in-thread version; skip this forwarded copy.
+                        tracing::debug!(
+                            "Lark WS: skipping forwarded duplicate of thread reply {}",
+                            lark_msg.message_id
+                        );
+                        continue;
+                    } else if is_thread_reply {
+                        // We already processed the non-thread copy, but this is the
+                        // authoritative thread reply — skip it to avoid double response.
+                        tracing::debug!(
+                            "Lark WS: thread reply arrived after forwarded copy, skipping {}",
+                            lark_msg.message_id
+                        );
+                        td.insert(key, (now, true));
+                        continue;
+                    }
+                    // Both non-thread — already seen, skip.
+                    tracing::debug!("Lark WS: content-dup {}", lark_msg.message_id);
+                    continue;
+                }
+                td.insert(key, (now, is_thread_reply));
             }
 
             let ack_emoji = "OK";
@@ -1143,6 +1191,38 @@ impl LarkChannel {
             .unwrap_or_default();
         if chat_type == "group" && !should_respond_in_group(&mentions) {
             return messages;
+        }
+
+        // Extract thread metadata for dedup
+        let root_id = event
+            .pointer("/message/root_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let parent_id = event
+            .pointer("/message/parent_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let is_thread_reply = root_id.is_some() || parent_id.is_some();
+
+        // Thread-reply dedup (parity with WS path)
+        {
+            let now = Instant::now();
+            let key = (chat_id.to_string(), content_hash(&text));
+            let mut td = self.thread_dedup.lock().unwrap();
+            td.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(30));
+            if let Some((_, prev_is_thread)) = td.get(&key) {
+                if *prev_is_thread {
+                    tracing::debug!("Lark webhook: skipping forwarded dup of thread reply");
+                    return messages;
+                } else if is_thread_reply {
+                    tracing::debug!("Lark webhook: thread reply after forwarded copy, skipping");
+                    td.insert(key, (now, true));
+                    return messages;
+                }
+                tracing::debug!("Lark webhook: content-dup");
+                return messages;
+            }
+            td.insert(key, (now, is_thread_reply));
         }
         let timestamp = event
             .pointer("/message/create_time")
@@ -1779,6 +1859,14 @@ impl LarkChannel {
 // WS helper functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+/// Compute a fast content hash for thread-reply deduplication.
+fn content_hash(s: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Flatten a Feishu `post` rich-text message to plain text.
 ///
@@ -3189,5 +3277,112 @@ mod tests {
         assert!(result.contains("**H2**: b"));
         // Should NOT contain pipe-delimited table lines
         assert!(!result.contains("|---|"));
+    }
+
+    #[test]
+    fn thread_reply_dedup_keeps_thread_version() {
+        let ch = make_channel();
+        // First event: thread reply (has root_id)
+        let payload_thread = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev_t1" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_testuser123" } },
+                "message": {
+                    "message_type": "text",
+                    "content": "{\"text\": \"hello from thread\"}",
+                    "chat_id": "oc_group1",
+                    "chat_type": "group",
+                    "message_id": "om_thread_msg",
+                    "root_id": "om_root_123",
+                    "parent_id": "om_parent_456",
+                    "create_time": "1700000000000",
+                    "mentions": [{"id":{"open_id":"ou_bot"},"key":"@_user_1","name":"bot"}]
+                }
+            }
+        });
+        let msgs1 = ch.parse_event_payload(&payload_thread);
+        assert_eq!(msgs1.len(), 1, "thread reply should be processed");
+
+        // Second event: forwarded copy (no root_id/parent_id), same content
+        let payload_fwd = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev_t2" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_testuser123" } },
+                "message": {
+                    "message_type": "text",
+                    "content": "{\"text\": \"hello from thread\"}",
+                    "chat_id": "oc_group1",
+                    "chat_type": "group",
+                    "message_id": "om_fwd_msg",
+                    "create_time": "1700000000000",
+                    "mentions": [{"id":{"open_id":"ou_bot"},"key":"@_user_1","name":"bot"}]
+                }
+            }
+        });
+        let msgs2 = ch.parse_event_payload(&payload_fwd);
+        assert_eq!(msgs2.len(), 0, "forwarded copy should be deduped");
+    }
+    #[test]
+    fn thread_reply_dedup_fwd_first_then_thread() {
+        let ch = make_channel();
+        // First event: forwarded copy (no root_id)
+        let payload_fwd = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev_f1" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_testuser123" } },
+                "message": {
+                    "message_type": "text",
+                    "content": "{\"text\": \"fwd first test\"}",
+                    "chat_id": "oc_group2",
+                    "chat_type": "group",
+                    "message_id": "om_fwd_first",
+                    "create_time": "1700000000000",
+                    "mentions": [{"id":{"open_id":"ou_bot"},"key":"@_user_1","name":"bot"}]
+                }
+            }
+        });
+        let msgs1 = ch.parse_event_payload(&payload_fwd);
+        assert_eq!(msgs1.len(), 1, "first copy processed when no prior seen");
+        // Second event: thread reply (has root_id), same content
+        let payload_thread = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev_f2" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_testuser123" } },
+                "message": {
+                    "message_type": "text",
+                    "content": "{\"text\": \"fwd first test\"}",
+                    "chat_id": "oc_group2",
+                    "chat_type": "group",
+                    "message_id": "om_thread_after",
+                    "root_id": "om_root_789",
+                    "create_time": "1700000000000",
+                    "mentions": [{"id":{"open_id":"ou_bot"},"key":"@_user_1","name":"bot"}]
+                }
+            }
+        });
+        let msgs2 = ch.parse_event_payload(&payload_thread);
+        assert_eq!(msgs2.len(), 0, "thread reply after fwd copy should be deduped");
+    }
+
+    #[test]
+    fn content_hash_deterministic() {
+        assert_eq!(content_hash("hello"), content_hash("hello"));
+        assert_ne!(content_hash("hello"), content_hash("world"));
+    }
+
+    #[test]
+    fn lark_message_deserializes_root_id_and_parent_id() {
+        let json = serde_json::json!({
+            "message_id": "om_1",
+            "chat_id": "oc_1",
+            "chat_type": "group",
+            "message_type": "text",
+            "content": "{\"text\":\"hi\"}",
+            "root_id": "om_root",
+            "parent_id": "om_parent"
+        });
+        let msg: LarkMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(msg.root_id.as_deref(), Some("om_root"));
+        assert_eq!(msg.parent_id.as_deref(), Some("om_parent"));
     }
 }
