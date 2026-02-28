@@ -23,6 +23,19 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 .await;
     }
 
+    // Auto-create .mcp.json when MCP is enabled and file is missing
+    if config.mcp.enabled {
+        let mcp_path = config.workspace_dir.join(
+            config.mcp.config_path.as_deref().unwrap_or(".mcp.json"),
+        );
+        if !mcp_path.exists() {
+            match std::fs::write(&mcp_path, r#"{"mcpServers": {}}"#) {
+                Ok(()) => tracing::info!("MCP: created empty {:?}", mcp_path),
+                Err(e) => tracing::warn!("MCP: failed to create {:?}: {}", mcp_path, e),
+            }
+        }
+    }
+
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
 
     {

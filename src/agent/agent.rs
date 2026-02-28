@@ -388,17 +388,6 @@ impl Agent {
             let config_path = config.mcp.config_path.as_deref().unwrap_or(".mcp.json");
             let mcp_json_path = config.workspace_dir.join(config_path);
 
-            // Auto-create .mcp.json with empty servers when missing
-            if !mcp_json_path.exists() {
-                let empty_config = r#"{"mcpServers": {}}"#;
-                match std::fs::write(&mcp_json_path, empty_config) {
-                    Ok(()) => tracing::info!("MCP: created empty {:?}", mcp_json_path),
-                    Err(e) => {
-                        tracing::warn!("MCP: failed to create {:?}: {}", mcp_json_path, e);
-                    }
-                }
-            }
-
             if mcp_json_path.exists() {
                 let builtin_names: std::collections::HashSet<String> =
                     tools.iter().map(|t| t.name().to_string()).collect();
