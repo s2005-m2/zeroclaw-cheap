@@ -141,16 +141,7 @@ fn build_share_card(filename: &str, doc_id: &str) -> String {
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": format!("文件 **{filename}** 已同步到飞书文档，你拥有可编辑权限。")
-                },
-                {
-                    "tag": "action",
-                    "actions": [{
-                        "tag": "button",
-                        "text": { "tag": "plain_text", "content": "打开文档" },
-                        "type": "primary",
-                        "url": doc_url
-                    }]
+                    "content": format!("文件 **{filename}** 已同步到飞书文档，你拥有可编辑权限。\n\n[打开文档]({doc_url})")
                 }
             ]
         }
