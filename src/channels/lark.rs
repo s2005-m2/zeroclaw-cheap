@@ -208,11 +208,12 @@ pub struct LarkChannel {
     tenant_token: Arc<RwLock<Option<CachedTenantToken>>>,
     /// Dedup set: WS message_ids seen in last ~30 min to prevent double-dispatch
     ws_seen_ids: Arc<RwLock<HashMap<String, Instant>>>,
-    /// Thread-reply dedup: (chat_id, content_hash) → (timestamp, is_thread_reply).
-    /// When a user replies in a Feishu thread with "also send to conversation" checked,
-    /// Feishu fires two events with different message_ids but identical content.
-    /// We keep the in-thread version (has root_id) and discard the forwarded copy.
+    /// Thread-reply dedup: tracks recent (chat_id, content_hash) to detect
+    /// "also send to conversation" duplicates. Stores (timestamp, is_thread_reply).
     thread_dedup: Arc<std::sync::Mutex<HashMap<(String, u64), (Instant, bool)>>>,
+    /// Cancel handles for pending non-thread messages awaiting the 100ms dedup window.
+    /// If a thread reply arrives within the window, the pending send is cancelled.
+    pending_cancel: Arc<std::sync::Mutex<HashMap<(String, u64), tokio::sync::oneshot::Sender<()>>>>,
     /// Streaming mode for progressive draft updates via CardKit.
     stream_mode: StreamMode,
     /// Minimum interval (ms) between card updates.
@@ -267,6 +268,7 @@ impl LarkChannel {
             tenant_token: Arc::new(RwLock::new(None)),
             ws_seen_ids: Arc::new(RwLock::new(HashMap::new())),
             thread_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending_cancel: Arc::new(std::sync::Mutex::new(HashMap::new())),
             stream_mode: StreamMode::default(),
             draft_update_interval_ms: 500,
             card_sequence: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -640,41 +642,40 @@ impl LarkChannel {
                 continue;
             }
 
-            // Thread-reply dedup: when Feishu "also send to conversation" is checked,
-            // two events fire with different message_ids but identical content.
-            // Keep the in-thread version (has root_id) and discard the forwarded copy.
+            // ── Thread-reply dedup with 100ms grace window ──────────────
+            // When Feishu "also send to conversation" is checked, two events fire
+            // with different message_ids but identical content. Thread replies
+            // (root_id present) are authoritative; non-thread copies wait 100ms
+            // so the thread version can arrive and cancel the pending send.
             let is_thread_reply = lark_msg.root_id.is_some() || lark_msg.parent_id.is_some();
+            let dedup_key = (lark_msg.chat_id.clone(), content_hash(&text));
             {
                 let now = Instant::now();
-                let key = (lark_msg.chat_id.clone(), content_hash(&text));
                 let mut td = self.thread_dedup.lock().unwrap();
-                // GC entries older than 30s
                 td.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(30));
-                if let Some((_, prev_is_thread)) = td.get(&key) {
-                    if *prev_is_thread {
-                        // Already processed the in-thread version; skip this forwarded copy.
-                        tracing::debug!(
-                            "Lark WS: skipping forwarded duplicate of thread reply {}",
-                            lark_msg.message_id
-                        );
-                        continue;
-                    } else if is_thread_reply {
-                        // We already processed the non-thread copy, but this is the
-                        // authoritative thread reply — skip it to avoid double response.
-                        tracing::debug!(
-                            "Lark WS: thread reply arrived after forwarded copy, skipping {}",
-                            lark_msg.message_id
-                        );
-                        td.insert(key, (now, true));
+
+                if let Some((_, prev_is_thread)) = td.get(&dedup_key) {
+                    if *prev_is_thread || !is_thread_reply {
+                        // Already have the thread version, or both are non-thread dups.
+                        tracing::debug!("Lark WS: dup content {}", lark_msg.message_id);
                         continue;
                     }
-                    // Both non-thread — already seen, skip.
-                    tracing::debug!("Lark WS: content-dup {}", lark_msg.message_id);
-                    continue;
+                    // Current is thread reply replacing a pending non-thread copy.
+                    // Cancel the pending delayed send.
+                    if let Some(cancel_tx) = self.pending_cancel.lock().unwrap().remove(&dedup_key) {
+                        let _ = cancel_tx.send(());
+                        tracing::debug!(
+                            "Lark WS: cancelled pending non-thread msg, using thread reply {}",
+                            lark_msg.message_id
+                        );
+                    }
+                    td.insert(dedup_key.clone(), (now, true));
+                } else {
+                    td.insert(dedup_key.clone(), (now, is_thread_reply));
                 }
-                td.insert(key, (now, is_thread_reply));
             }
 
+            // Build ACK reaction
             let ack_emoji = "OK";
             let reaction_channel = self.clone();
             let reaction_message_id = lark_msg.message_id.clone();
@@ -697,18 +698,37 @@ impl LarkChannel {
                 thread_ts: if lark_msg.chat_type == "p2p" { Some(lark_msg.message_id.clone()) } else { None },
             };
 
-            tracing::debug!("Lark WS: message in {}", lark_msg.chat_id);
-            match tx.try_send(channel_msg) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
-                    if overflow.len() >= OVERFLOW_CAP {
-                        tracing::warn!("Lark WS: overflow buffer full, dropping oldest message");
-                        overflow.pop_front();
+            if is_thread_reply {
+                // Thread reply: send immediately.
+                tracing::debug!("Lark WS: thread reply {}", lark_msg.message_id);
+                match tx.try_send(channel_msg) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                        if overflow.len() >= OVERFLOW_CAP {
+                            tracing::warn!("Lark WS: overflow full, dropping oldest");
+                            overflow.pop_front();
+                        }
+                        overflow.push_back(msg);
                     }
-                    tracing::warn!("Lark WS: channel full, buffering message for {}", msg.sender);
-                    overflow.push_back(msg);
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            } else {
+                // Non-thread message: delay 100ms so a thread reply can supersede it.
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                self.pending_cancel.lock().unwrap().insert(dedup_key, cancel_tx);
+                let tx2 = tx.clone();
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                            // Grace window elapsed, no thread reply arrived — send it.
+                            let _ = tx2.send(channel_msg).await;
+                        }
+                        _ = cancel_rx => {
+                            // Cancelled by an arriving thread reply — drop this copy.
+                            tracing::debug!("Lark WS: pending non-thread msg cancelled");
+                        }
+                    }
+                });
             }
         }
         Ok(())
