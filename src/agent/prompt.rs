@@ -44,6 +44,7 @@ impl SystemPromptBuilder {
                 Box::new(SkillsSection),
                 Box::new(WorkspaceSection),
                 Box::new(DateTimeSection),
+                Box::new(PlanningSection),
                 Box::new(RuntimeSection),
                 #[cfg(feature = "feishu-docs-sync")]
                 Box::new(DocsSyncSection),
@@ -77,6 +78,7 @@ pub struct GroundingSection;
 pub struct SkillsSection;
 pub struct WorkspaceSection;
 pub struct RuntimeSection;
+pub struct PlanningSection;
 pub struct DateTimeSection;
 #[cfg(feature = "feishu-docs-sync")]
 pub struct DocsSyncSection;
@@ -289,6 +291,128 @@ impl PromptSection for DocsSyncSection {
         out.push_str("(list, add, remove, push, pull, status).\n");
 
         Ok(out)
+    }
+}
+
+const PLANNING_PROMPT: &str = r#"## Planning & Execution System
+
+You have a built-in planning capability for complex, multi-step tasks.
+When a user request involves 3+ steps, cross-cutting concerns, or would benefit
+from structured decomposition, use this system.
+
+### When to Plan
+
+- User explicitly asks to plan or create a plan
+- Task has 3+ distinct implementation steps with dependencies
+- Task spans multiple files/modules/subsystems
+- Task benefits from review before execution
+- You are unsure about the right approach and need to think it through
+
+Do NOT plan for: single-file edits, direct questions, trivial fixes, or tasks
+where you already know exactly what to do.
+
+### Plan Format
+
+Save plans to `.zeroclaw/plans/{name}.md` using `file_write`. Use this format:
+
+```markdown
+# Plan: {name}
+
+## Summary
+{1-2 sentence overview}
+**Estimated effort**: {small/medium/large}
+
+## Context
+- **Request**: {original user request}
+- **Key findings**: {what you learned from reading the codebase}
+
+## Tasks
+
+### T1: {title}
+- **Status**: pending
+- **Depends on**: (none)
+- **Description**: {what to do}
+- **Delegate to**: {agent name, or "self" if you will do it directly}
+- **Acceptance criteria**:
+  - {criterion 1}
+  - {criterion 2}
+- **Rollback**: {how to undo if this fails}
+
+### T2: {title}
+- **Status**: pending
+- **Depends on**: T1
+- ...
+
+## Verification
+- {command or check to run after all tasks complete}
+```
+
+Task status values: `pending`, `in_progress`, `completed`, `failed`, `skipped`.
+
+### Plan Creation Flow
+
+1. **Gather context**: Use `file_read`, `glob_search`, `content_search` to understand
+   the codebase before planning. Never plan blind.
+2. **Decompose**: Break the request into atomic tasks with clear boundaries.
+3. **Order**: Identify dependencies between tasks. A task should only depend on
+   tasks whose output it actually needs.
+4. **Assign**: For each task, decide whether to do it yourself or delegate to a
+   sub-agent via the `delegate` tool. Delegate when a task benefits from a
+   different model or specialized focus.
+5. **Write the plan**: Save to `.zeroclaw/plans/{name}.md`.
+6. **Review** (optional): Re-read the plan and check for gaps, missing edge cases,
+   or tasks that are impossible to start. Fix before executing.
+7. **Present to user**: Show a brief summary and ask for confirmation before executing.
+
+### Plan Execution Flow
+
+After the user confirms (or if they asked you to just do it):
+
+1. Read the plan file.
+2. Find all tasks with status `pending` whose dependencies are all `completed`.
+3. For each ready task:
+   a. Update its status to `in_progress` in the plan file.
+   b. Execute it (directly or via `delegate`).
+   c. Verify its acceptance criteria.
+   d. Update status to `completed` or `failed`.
+   e. If failed and rollback is defined, execute the rollback.
+4. Repeat until all tasks are done or a blocking failure occurs.
+5. Run the verification commands from the plan.
+6. Report the final result to the user.
+
+### Execution Rules
+
+- **Update the plan file** after every task status change. The plan file is the
+  single source of truth.
+- **Never skip a dependency**. If T2 depends on T1, T1 must be `completed` before
+  T2 can start.
+- **Fail fast**: If a task fails and has no rollback, stop and ask the user.
+- **Delegate effectively**: When using `delegate`, include the task description,
+  acceptance criteria, and relevant context in the prompt. The sub-agent does not
+  have access to the plan file unless you include the relevant parts.
+- **Commit strategy**: Do not commit unless the user asked. If they did, commit
+  after each logical group of tasks, not after every single task.
+
+### Resuming a Plan
+
+If a plan already exists with some tasks completed, resume from where it left off.
+Read the plan, find the next `pending` task with satisfied dependencies, and continue.
+Do not re-execute `completed` tasks.
+"#;
+
+impl PromptSection for PlanningSection {
+    fn name(&self) -> &str {
+        "planning"
+    }
+
+    fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
+        // Only inject planning instructions when the delegate tool is available,
+        // which indicates multi-agent capability is configured.
+        let has_delegate = ctx.tools.iter().any(|t| t.name() == "delegate");
+        if !has_delegate {
+            return Ok(String::new());
+        }
+        Ok(PLANNING_PROMPT.to_string())
     }
 }
 
