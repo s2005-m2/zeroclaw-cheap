@@ -5086,6 +5086,8 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          Stay silent when it's casual banter or someone already answered.\n\n\
          ## Tools & Skills\n\n\
          Skills are listed in the system prompt. Use `read` on a skill's SKILL.md for details.\n\
+         you MUST read the `skill-management` skill first, **not** manage skill by edit or write file.\n\\n\
+         - Common pattern: you build a useful workflow -> save it as a skill for reuse.\n\n\
          Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.\n\n\
          ## VPN Proxy\n\n\
          If `vpn_control` tool is available, you can manage network proxy for accessing blocked APIs.\n\
@@ -5094,15 +5096,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - Use `vpn_control disable` when done, to reduce latency for local/domestic traffic.\n\
          - Bypass domains (China sites, local services) are auto-configured; add more with `add_bypass`.\n\n\
          ## MCP Servers\n\n\
-         Before using `mcp_manage`, you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
-         ## Skills Management\n\n\
-         If `skill_manage` tool is available, you can create and manage reusable skills at runtime.\n\
-         - Use `skill_manage list` to see installed skills.\n\
-         - Use `skill_manage create` to save a new skill (name, description, tools, prompts).\n\
-         - Use `skill_manage update` to modify an existing skill.\n\
-         - Use `skill_manage delete` to remove a skill.\n\
-         - Skills are hot-reloaded automatically after any CRUD operation — no restart needed.\n\
-         - Common pattern: you build a useful workflow -> save it as a skill for reuse.\n\n\
+         you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
          ## Lifecycle Hooks\n\n\
          If `hook_write` tool is available, you can create lifecycle hooks that run on agent events.\n\
          - Use `hook_write` to create a HOOK.toml manifest with event triggers and shell commands.\n\

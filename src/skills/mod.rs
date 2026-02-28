@@ -156,6 +156,13 @@ fn seed_builtin_skills(skills_dir: &Path) {
         let _ = std::fs::create_dir_all(&mcp_dir);
         let _ = std::fs::write(&mcp_path, include_str!("../../skills/mcp-setup/SKILL.md"));
     }
+
+    let sm_dir = skills_dir.join("skill-management");
+    let sm_path = sm_dir.join("SKILL.md");
+    if !sm_path.exists() {
+        let _ = std::fs::create_dir_all(&sm_dir);
+        let _ = std::fs::write(&sm_path, include_str!("../../skills/skill-management/SKILL.md"));
+    }
 }
 fn load_workspace_skills(workspace_dir: &Path, skip_audit: bool) -> Vec<Skill> {
     let skills_dir = workspace_dir.join("skills");
@@ -686,24 +693,9 @@ pub fn init_skills_dir(workspace_dir: &Path) -> Result<()> {
         std::fs::write(
             &readme,
             "# ZeroClaw Skills\n\n\
-             Each subdirectory is a skill. Create a `SKILL.toml` or `SKILL.md` file inside.\n\n\
-             ## SKILL.toml format\n\n\
-             ```toml\n\
-             [skill]\n\
-             name = \"my-skill\"\n\
-             description = \"What this skill does\"\n\
-             version = \"0.1.0\"\n\
-             author = \"your-name\"\n\
-             tags = [\"productivity\", \"automation\"]\n\n\
-             [[tools]]\n\
-             name = \"my_tool\"\n\
-             description = \"What this tool does\"\n\
-             kind = \"shell\"\n\
-             command = \"echo hello\"\n\
-             ```\n\n\
-             ## SKILL.md format (simpler)\n\n\
-             Just write a markdown file with instructions for the agent.\n\
-             The agent will read it and follow the instructions.\n\n\
+             Each subdirectory is a skill containing a `SKILL.toml` or `SKILL.md` file.\n\n\
+             **Preferred: use `skill_manage` tool** to create/update/delete skills at runtime.\n\
+             Direct file writes bypass hot-reload and require a restart.\n\n\
              ## Installing community skills\n\n\
              ```bash\n\
              zeroclaw skills install <source>\n\
