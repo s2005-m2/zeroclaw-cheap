@@ -1367,32 +1367,43 @@ impl Channel for LarkChannel {
         if text.is_empty() {
             return Ok(());
         }
+        let sections = split_lark_sections(&text);
         let token = self.get_tenant_access_token().await?;
         let url = self.send_message_url();
-        let content = serde_json::json!({
-            "elements": [{
-                "tag": "markdown",
-                "content": text
-            }]
-        })
-        .to_string();
-        let body = serde_json::json!({
-            "receive_id": message.recipient,
-            "msg_type": "interactive",
-            "content": content,
-        });
-        let (status, response) = self.send_text_once(&url, &token, &body).await?;
-        if should_refresh_lark_tenant_token(status, &response) {
-            self.invalidate_token().await;
-            let new_token = self.get_tenant_access_token().await?;
-            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
-            if should_refresh_lark_tenant_token(rs, &rr) {
-                anyhow::bail!("Lark send failed after token refresh: status={rs}, body={rr}");
+        for (title, body) in &sections {
+            if body.is_empty() && title.is_none() {
+                continue;
             }
-            ensure_lark_send_success(rs, &rr, "after token refresh")?;
-            return Ok(());
+            let mut card = serde_json::json!({
+                "elements": [{
+                    "tag": "markdown",
+                    "content": body
+                }]
+            });
+            if let Some(t) = title {
+                card["header"] = serde_json::json!({
+                    "title": { "tag": "plain_text", "content": t }
+                });
+            }
+            let content = card.to_string();
+            let msg_body = serde_json::json!({
+                "receive_id": message.recipient,
+                "msg_type": "interactive",
+                "content": content,
+            });
+            let (status, response) = self.send_text_once(&url, &token, &msg_body).await?;
+            if should_refresh_lark_tenant_token(status, &response) {
+                self.invalidate_token().await;
+                let new_token = self.get_tenant_access_token().await?;
+                let (rs, rr) = self.send_text_once(&url, &new_token, &msg_body).await?;
+                if should_refresh_lark_tenant_token(rs, &rr) {
+                    anyhow::bail!("Lark send failed after token refresh: status={rs}, body={rr}");
+                }
+                ensure_lark_send_success(rs, &rr, "after token refresh")?;
+            } else {
+                ensure_lark_send_success(status, &response, "without token refresh")?;
+            }
         }
-        ensure_lark_send_success(status, &response, "without token refresh")?;
         Ok(())
     }
 
@@ -1419,7 +1430,7 @@ impl Channel for LarkChannel {
         let initial_text = if message.content.is_empty() {
             "...".to_string()
         } else {
-            message.content.clone()
+            lark_headers_to_bold(&message.content)
         };
 
         let card_json = serde_json::json!({
@@ -1486,7 +1497,7 @@ impl Channel for LarkChannel {
             "body": {
                 "elements": [{
                     "tag": "markdown",
-                    "content": text
+                    "content": lark_headers_to_bold(text)
                 }]
             }
         })
@@ -1518,7 +1529,7 @@ impl Channel for LarkChannel {
             "body": {
                 "elements": [{
                     "tag": "markdown",
-                    "content": text
+                    "content": lark_headers_to_bold(text)
                 }]
             }
         })
@@ -1849,6 +1860,69 @@ fn parse_lark_attachment_markers(message: &str) -> (String, Vec<LarkAttachment>)
         cursor = close + 1;
     }
     (cleaned.trim().to_string(), attachments)
+}
+
+/// Split text by `## ` headings into sections. Each section is (Option<title>, body).
+/// Sub-headings (`###` and below) are converted to bold. Lone `#` headings are also converted to bold.
+fn split_lark_sections(text: &str) -> Vec<(Option<String>, String)> {
+    let mut sections: Vec<(Option<String>, String)> = Vec::new();
+    let mut current_title: Option<String> = None;
+    let mut current_body = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            // Flush previous section
+            let body = current_body.trim().to_string();
+            if current_title.is_some() || !body.is_empty() {
+                sections.push((current_title.take(), body));
+            }
+            current_title = Some(rest.trim().to_string());
+            current_body = String::new();
+        } else {
+            // Convert # / ### / #### / ##### / ###### to bold (check longest prefix first)
+            let converted = if let Some(rest) = trimmed.strip_prefix("###### ") {
+                format!("**{}**", rest.trim())
+            } else if let Some(rest) = trimmed.strip_prefix("##### ") {
+                format!("**{}**", rest.trim())
+            } else if let Some(rest) = trimmed.strip_prefix("#### ") {
+                format!("**{}**", rest.trim())
+            } else if let Some(rest) = trimmed.strip_prefix("### ") {
+                format!("**{}**", rest.trim())
+            } else if let Some(rest) = trimmed.strip_prefix("# ") {
+                format!("**{}**", rest.trim())
+            } else {
+                line.to_string()
+            };
+            if !current_body.is_empty() {
+                current_body.push('\n');
+            }
+            current_body.push_str(&converted);
+        }
+    }
+    // Flush last section
+    let body = current_body.trim().to_string();
+    if current_title.is_some() || !body.is_empty() {
+        sections.push((current_title, body));
+    }
+    sections
+}
+
+/// Replace all markdown headings (`#` through `######`) with bold text.
+/// Used for streaming paths where we cannot split into multiple cards.
+fn lark_headers_to_bold(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            for prefix in ["###### ", "##### ", "#### ", "### ", "## ", "# "] {
+                if let Some(rest) = trimmed.strip_prefix(prefix) {
+                    return format!("**{}**", rest.trim());
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Legacy wrapper: extract only `[IMAGE:…]` markers (used by existing tests).
