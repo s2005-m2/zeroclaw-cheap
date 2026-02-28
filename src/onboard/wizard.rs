@@ -5098,11 +5098,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          ## MCP Servers\n\n\
          you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
          ## Lifecycle Hooks\n\n\
-         If `hook_write` tool is available, you can create lifecycle hooks that run on agent events.\n\
-         - Use `hook_write` to create a HOOK.toml manifest with event triggers and shell commands.\n\
-         - Supported events: before_prompt_build, after_tool_call, session_start, session_end.\n\
-         - Hooks are hot-reloaded via stamp file — daemon picks up changes on next message.\n\
-         - Common pattern: user wants automated side-effects on certain events -> create a hook.\n\n\
+         Read the `hook-manage` skill first — it contains the required workflow for creating and managing lifecycle hooks.\n\
          ## Crash Recovery\n\n\
          - If a run stops unexpectedly, recover context before acting.\n\
          - Check `MEMORY.md` + latest `memory/*.md` notes to avoid duplicate work.\n\
@@ -5227,10 +5223,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
            - Actions: `create`, `read`, `update`, `delete`, `list`.\n\
            - Skills are hot-reloaded automatically after CRUD operations — no restart needed.\n\n\
          ## Lifecycle Hooks\n\n\
-         - **hook_write** — Create lifecycle hooks (HOOK.toml) that run on agent events\n\
-           - Use when: user wants automated actions on events (e.g. before prompt, after tool call, session start/end).\n\
-           - Don't use when: a cron job or manual trigger is more appropriate.\n\
-           - Hooks are hot-reloaded via stamp file — daemon picks up changes on next message.\n\n\
+         Read the `hook-manage` skill for hook creation, editing, and management workflow.\n\
          ---\n\
          *Add whatever helps you do your job. This is your cheat sheet.*\n";
 

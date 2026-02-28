@@ -3269,8 +3269,8 @@ pub async fn start_channels(
     }
     if config.hooks.enabled {
         tool_descs.push((
-            "hook_write",
-            "Create lifecycle hooks (HOOK.toml) that run on agent events. Use when: user wants automated actions on events (before_prompt_build, after_tool_call, session_start, session_end).",
+            "hook_reload",
+            "Trigger hot-reload of lifecycle hooks. Use after creating or editing HOOK.toml files in the hooks directory via file_write.",
         ));
     }
     // skill_manage is always available when shared_skills is wired

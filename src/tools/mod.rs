@@ -34,7 +34,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod git_operations;
 pub mod glob_search;
-pub mod hook_write;
+pub mod hook_reload;
 pub mod hardware_board_info;
 pub mod hardware_memory_map;
 pub mod hardware_memory_read;
@@ -78,7 +78,7 @@ pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
 pub use glob_search::GlobSearchTool;
-pub use hook_write::HookWriteTool;
+pub use hook_reload::HookReloadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
 pub use mcp_bridge::McpBridgeTool;
@@ -423,9 +423,9 @@ pub fn all_tools_with_runtime(
         }
     }
 
-    // Register hook_write tool when hooks are enabled
+    // Register hook_reload tool when hooks are enabled
     if root_config.hooks.enabled {
-        tool_arcs.push(Arc::new(HookWriteTool::new(
+        tool_arcs.push(Arc::new(HookReloadTool::new(
             root_config.hooks.clone(),
             workspace_dir.to_path_buf(),
         )));
