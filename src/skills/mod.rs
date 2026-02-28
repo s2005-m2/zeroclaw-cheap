@@ -147,8 +147,19 @@ fn load_skills_with_open_skills_config(
     skills
 }
 
+
+/// Seed built-in skills into the workspace skills directory if missing.
+fn seed_builtin_skills(skills_dir: &Path) {
+    let mcp_dir = skills_dir.join("mcp-setup");
+    let mcp_path = mcp_dir.join("SKILL.md");
+    if !mcp_path.exists() {
+        let _ = std::fs::create_dir_all(&mcp_dir);
+        let _ = std::fs::write(&mcp_path, include_str!("../../skills/mcp-setup/SKILL.md"));
+    }
+}
 fn load_workspace_skills(workspace_dir: &Path, skip_audit: bool) -> Vec<Skill> {
     let skills_dir = workspace_dir.join("skills");
+    seed_builtin_skills(&skills_dir);
     load_skills_from_directory(&skills_dir, skip_audit)
 }
 

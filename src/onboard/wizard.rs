@@ -5094,11 +5094,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - Use `vpn_control disable` when done, to reduce latency for local/domestic traffic.\n\
          - Bypass domains (China sites, local services) are auto-configured; add more with `add_bypass`.\n\n\
          ## MCP Servers\n\n\
-         If `mcp_manage` tool is available, you can install MCP servers to gain new capabilities.\n\
-         - Use `mcp_manage list` to see installed servers and their tools.\n\
-         - Use `mcp_manage add` to install a server (e.g. filesystem, git, fetch, postgres).\n\
-         - After adding, the server's tools appear automatically in your tool list.\n\
-         - Common pattern: user asks for a capability you lack -> check if an MCP server provides it -> install it.\n\n\
+         Before using `mcp_manage`, you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
          ## Skills Management\n\n\
          If `skill_manage` tool is available, you can create and manage reusable skills at runtime.\n\
          - Use `skill_manage list` to see installed skills.\n\
