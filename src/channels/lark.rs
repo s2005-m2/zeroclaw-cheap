@@ -719,7 +719,7 @@ impl LarkChannel {
                 let tx2 = tx.clone();
                 tokio::spawn(async move {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        _ = tokio::time::sleep(Duration::from_millis(200)) => {
                             // Grace window elapsed, no thread reply arrived — send it.
                             let _ = tx2.send(channel_msg).await;
                         }
