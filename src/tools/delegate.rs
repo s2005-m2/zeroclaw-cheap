@@ -33,6 +33,10 @@ pub struct DelegateTool {
     parent_tools: Arc<Vec<Arc<dyn Tool>>>,
     /// Inherited multimodal handling config for sub-agent loops.
     multimodal_config: crate::config::MultimodalConfig,
+    /// Fallback provider from root config (`default_provider`).
+    default_provider: Option<String>,
+    /// Fallback model from root config (`default_model`).
+    default_model: Option<String>,
 }
 
 impl DelegateTool {
@@ -63,6 +67,8 @@ impl DelegateTool {
             depth: 0,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
+            default_provider: None,
+            default_model: None,
         }
     }
 
@@ -99,6 +105,8 @@ impl DelegateTool {
             depth,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
+            default_provider: None,
+            default_model: None,
         }
     }
 
@@ -111,6 +119,18 @@ impl DelegateTool {
     /// Attach multimodal configuration for sub-agent tool loops.
     pub fn with_multimodal_config(mut self, config: crate::config::MultimodalConfig) -> Self {
         self.multimodal_config = config;
+        self
+    }
+
+    /// Attach fallback provider/model from root config for sub-agents that
+    /// omit their own provider or model.
+    pub fn with_defaults(
+        mut self,
+        default_provider: Option<String>,
+        default_model: Option<String>,
+    ) -> Self {
+        self.default_provider = default_provider;
+        self.default_model = default_model;
         self
     }
 }
@@ -240,6 +260,27 @@ impl Tool for DelegateTool {
             });
         }
 
+        // Resolve provider and model with fallback to root defaults.
+        let resolved_provider = agent_config
+            .provider
+            .as_deref()
+            .or(self.default_provider.as_deref())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Agent '{agent_name}' has no provider configured and no default_provider set"
+                )
+            })?;
+
+        let resolved_model = agent_config
+            .model
+            .as_deref()
+            .or(self.default_model.as_deref())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Agent '{agent_name}' has no model configured and no default_model set"
+                )
+            })?;
+
         // Create provider for this agent
         let provider_credential_owned = agent_config
             .api_key
@@ -249,7 +290,7 @@ impl Tool for DelegateTool {
         let provider_credential = provider_credential_owned.as_ref().map(String::as_str);
 
         let provider: Box<dyn Provider> = match providers::create_provider_with_options(
-            &agent_config.provider,
+            resolved_provider,
             provider_credential,
             &self.provider_runtime_options,
         ) {
@@ -259,8 +300,7 @@ impl Tool for DelegateTool {
                     success: false,
                     output: String::new(),
                     error: Some(format!(
-                        "Failed to create provider '{}' for agent '{agent_name}': {e}",
-                        agent_config.provider
+                        "Failed to create provider '{resolved_provider}' for agent '{agent_name}': {e}"
                     )),
                 });
             }
@@ -284,6 +324,8 @@ impl Tool for DelegateTool {
                     &*provider,
                     &full_prompt,
                     temperature,
+                    resolved_provider,
+                    resolved_model,
                 )
                 .await;
         }
@@ -294,7 +336,7 @@ impl Tool for DelegateTool {
             provider.chat_with_system(
                 agent_config.system_prompt.as_deref(),
                 &full_prompt,
-                &agent_config.model,
+                resolved_model,
                 temperature,
             ),
         )
@@ -324,8 +366,8 @@ impl Tool for DelegateTool {
                     success: true,
                     output: format!(
                         "[Agent '{agent_name}' ({provider}/{model})]\n{rendered}",
-                        provider = agent_config.provider,
-                        model = agent_config.model
+                        provider = resolved_provider,
+                        model = resolved_model
                     ),
                     error: None,
                 })
@@ -347,6 +389,8 @@ impl DelegateTool {
         provider: &dyn Provider,
         full_prompt: &str,
         temperature: f64,
+        resolved_provider: &str,
+        resolved_model: &str,
     ) -> anyhow::Result<ToolResult> {
         if agent_config.allowed_tools.is_empty() {
             return Ok(ToolResult {
@@ -399,8 +443,8 @@ impl DelegateTool {
                 &mut history,
                 &sub_tools,
                 &noop_observer,
-                &agent_config.provider,
-                &agent_config.model,
+                resolved_provider,
+                resolved_model,
                 temperature,
                 true,
                 None,
@@ -428,8 +472,8 @@ impl DelegateTool {
                     success: true,
                     output: format!(
                         "[Agent '{agent_name}' ({provider}/{model}, agentic)]\n{rendered}",
-                        provider = agent_config.provider,
-                        model = agent_config.model
+                        provider = resolved_provider,
+                        model = resolved_model
                     ),
                     error: None,
                 })
@@ -511,8 +555,8 @@ mod tests {
         agents.insert(
             "researcher".to_string(),
             DelegateAgentConfig {
-                provider: "ollama".to_string(),
-                model: "llama3".to_string(),
+                provider: Some("ollama".to_string()),
+                model: Some("llama3".to_string()),
                 system_prompt: Some("You are a research assistant.".to_string()),
                 api_key: None,
                 temperature: Some(0.3),
@@ -525,8 +569,8 @@ mod tests {
         agents.insert(
             "coder".to_string(),
             DelegateAgentConfig {
-                provider: "openrouter".to_string(),
-                model: "anthropic/claude-sonnet-4-20250514".to_string(),
+                provider: Some("openrouter".to_string()),
+                model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
                 system_prompt: None,
                 api_key: Some("delegate-test-credential".to_string()),
                 temperature: None,
@@ -678,8 +722,8 @@ mod tests {
 
     fn agentic_config(allowed_tools: Vec<String>, max_iterations: usize) -> DelegateAgentConfig {
         DelegateAgentConfig {
-            provider: "openrouter".to_string(),
-            model: "model-test".to_string(),
+            provider: Some("openrouter".to_string()),
+            model: Some("model-test".to_string()),
             system_prompt: Some("You are agentic.".to_string()),
             api_key: Some("delegate-test-credential".to_string()),
             temperature: Some(0.2),
@@ -786,8 +830,8 @@ mod tests {
         agents.insert(
             "broken".to_string(),
             DelegateAgentConfig {
-                provider: "totally-invalid-provider".to_string(),
-                model: "model".to_string(),
+                provider: Some("totally-invalid-provider".to_string()),
+                model: Some("model".to_string()),
                 system_prompt: None,
                 api_key: None,
                 temperature: None,
@@ -892,8 +936,8 @@ mod tests {
         agents.insert(
             "tester".to_string(),
             DelegateAgentConfig {
-                provider: "invalid-for-test".to_string(),
-                model: "test-model".to_string(),
+                provider: Some("invalid-for-test".to_string()),
+                model: Some("test-model".to_string()),
                 system_prompt: None,
                 api_key: None,
                 temperature: None,
@@ -927,8 +971,8 @@ mod tests {
         agents.insert(
             "tester".to_string(),
             DelegateAgentConfig {
-                provider: "invalid-for-test".to_string(),
-                model: "test-model".to_string(),
+                provider: Some("invalid-for-test".to_string()),
+                model: Some("test-model".to_string()),
                 system_prompt: None,
                 api_key: None,
                 temperature: None,
@@ -1027,7 +1071,7 @@ mod tests {
 
         let provider = OneToolThenFinalProvider;
         let result = tool
-            .execute_agentic("agentic", &config, &provider, "run", 0.2)
+            .execute_agentic("agentic", &config, &provider, "run", 0.2, "openrouter", "model-test")
             .await
             .unwrap();
 
@@ -1049,7 +1093,7 @@ mod tests {
 
         let provider = OneToolThenFinalProvider;
         let result = tool
-            .execute_agentic("agentic", &config, &provider, "run", 0.2)
+            .execute_agentic("agentic", &config, &provider, "run", 0.2, "openrouter", "model-test")
             .await
             .unwrap();
 
@@ -1069,7 +1113,7 @@ mod tests {
 
         let provider = InfiniteToolCallProvider;
         let result = tool
-            .execute_agentic("agentic", &config, &provider, "run", 0.2)
+            .execute_agentic("agentic", &config, &provider, "run", 0.2, "openrouter", "model-test")
             .await
             .unwrap();
 
@@ -1089,7 +1133,7 @@ mod tests {
 
         let provider = FailingProvider;
         let result = tool
-            .execute_agentic("agentic", &config, &provider, "run", 0.2)
+            .execute_agentic("agentic", &config, &provider, "run", 0.2, "openrouter", "model-test")
             .await
             .unwrap();
 

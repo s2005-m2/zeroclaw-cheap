@@ -399,7 +399,11 @@ pub fn all_tools_with_runtime(
             },
         )
         .with_parent_tools(parent_tools)
-        .with_multimodal_config(root_config.multimodal.clone());
+        .with_multimodal_config(root_config.multimodal.clone())
+        .with_defaults(
+            root_config.default_provider.clone(),
+            root_config.default_model.clone(),
+        );
         tool_arcs.push(Arc::new(delegate_tool));
     }
 
@@ -656,8 +660,8 @@ mod tests {
         agents.insert(
             "researcher".to_string(),
             DelegateAgentConfig {
-                provider: "ollama".to_string(),
-                model: "llama3".to_string(),
+                provider: Some("ollama".to_string()),
+                model: Some("llama3".to_string()),
                 system_prompt: None,
                 api_key: None,
                 temperature: None,

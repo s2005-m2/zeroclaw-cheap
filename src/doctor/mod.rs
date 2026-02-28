@@ -534,14 +534,15 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
     agent_names.sort();
     for name in agent_names {
         let agent = config.agents.get(name).unwrap();
-        if let Some(reason) = provider_validation_error(&agent.provider) {
-            items.push(DiagItem::warn(
-                cat,
-                format!(
-                    "agent \"{name}\" uses invalid provider \"{}\": {}",
-                    agent.provider, reason
-                ),
-            ));
+        if let Some(ref provider) = agent.provider {
+            if let Some(reason) = provider_validation_error(provider) {
+                items.push(DiagItem::warn(
+                    cat,
+                    format!(
+                        "agent \"{name}\" uses invalid provider \"{provider}\": {reason}"
+                    ),
+                ));
+            }
         }
     }
 }
@@ -1203,8 +1204,8 @@ mod tests {
         config.agents.insert(
             "zeta".into(),
             crate::config::DelegateAgentConfig {
-                provider: "totally-fake".into(),
-                model: "model-z".into(),
+                provider: Some("totally-fake".into()),
+                model: Some("model-z".into()),
                 system_prompt: None,
                 api_key: None,
                 temperature: None,
@@ -1217,8 +1218,8 @@ mod tests {
         config.agents.insert(
             "alpha".into(),
             crate::config::DelegateAgentConfig {
-                provider: "totally-fake".into(),
-                model: "model-a".into(),
+                provider: Some("totally-fake".into()),
+                model: Some("model-a".into()),
                 system_prompt: None,
                 api_key: None,
                 temperature: None,

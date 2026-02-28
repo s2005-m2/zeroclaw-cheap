@@ -227,10 +227,13 @@ pub struct Config {
 /// Configuration for a delegate sub-agent used by the `delegate` tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DelegateAgentConfig {
-    /// Provider name (e.g. "ollama", "openrouter", "anthropic")
-    pub provider: String,
-    /// Model name
-    pub model: String,
+    /// Provider name (e.g. "ollama", "openrouter", "anthropic").
+    /// When `None`, inherits from the root `default_provider`.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model name. When `None`, inherits from the root `default_model`.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Optional system prompt for the sub-agent
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -5249,8 +5252,8 @@ tool_dispatcher = "xml"
         config.agents.insert(
             "worker".into(),
             DelegateAgentConfig {
-                provider: "openrouter".into(),
-                model: "model-test".into(),
+                provider: Some("openrouter".into()),
+                model: Some("model-test".into()),
                 system_prompt: None,
                 api_key: Some("agent-credential".into()),
                 temperature: None,
