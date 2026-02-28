@@ -40,6 +40,7 @@ impl SystemPromptBuilder {
                 Box::new(IdentitySection),
                 Box::new(ToolsSection),
                 Box::new(SafetySection),
+                Box::new(GroundingSection),
                 Box::new(SkillsSection),
                 Box::new(WorkspaceSection),
                 Box::new(DateTimeSection),
@@ -72,6 +73,7 @@ impl SystemPromptBuilder {
 pub struct IdentitySection;
 pub struct ToolsSection;
 pub struct SafetySection;
+pub struct GroundingSection;
 pub struct SkillsSection;
 pub struct WorkspaceSection;
 pub struct RuntimeSection;
@@ -153,6 +155,40 @@ impl PromptSection for SafetySection {
 
     fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
         Ok("## Safety\n\n- Do not exfiltrate private data.\n- Do not run destructive commands without asking.\n- Do not bypass oversight or approval mechanisms.\n- Prefer `trash` over `rm`.\n- When in doubt, ask before acting externally.".into())
+    }
+}
+
+impl PromptSection for GroundingSection {
+    fn name(&self) -> &str {
+        "grounding"
+    }
+
+    fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
+        Ok(r#"## Grounding & Anti-Hallucination Rules
+
+### Read Before Write
+- ALWAYS use file_read or glob_search to inspect existing files and adjacent code before making changes.
+- When editing code, first read the surrounding context (imports, trait impls, module structure) to understand the codebase's conventions.
+
+### Verify Before Claiming
+- NEVER claim a file, function, type, or module exists without verifying via tools (file_read, glob_search, content_search, shell).
+- NEVER invent code references. When citing code, include the actual file path confirmed by tool output.
+- If you cannot find something after searching, say so explicitly rather than guessing.
+- When referencing specific code locations, use the format `file_path:line_number` only when you have actually read the file and confirmed the line.
+
+### Scope Discipline
+- Do what has been asked; nothing more, nothing less.
+
+### Admit Uncertainty
+- If you are unsure about something, state your uncertainty explicitly instead of presenting a guess as fact.
+- Distinguish clearly between what you have verified (via tool output) and what you are inferring or assuming.
+- When a tool call fails or returns unexpected results, report the actual output rather than fabricating a plausible result.
+
+### Tool Use Discipline
+- Only reference tools that are listed in the Tools section above. Do not invent tool names or parameters.
+- Validate tool arguments against the documented parameter schema before calling.
+- When a tool returns an error, report and analysis the real error message. Do not silently retry with made-up corrections.
+- Do not fabricate tool output. Every tool result you reference must come from an actual tool execution in this conversation."#.into())
     }
 }
 
