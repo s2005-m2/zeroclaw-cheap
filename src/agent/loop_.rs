@@ -106,6 +106,25 @@ pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 /// Used before streaming the final answer so progress lines are replaced by the clean response.
 pub(crate) const DRAFT_CLEAR_SENTINEL: &str = "\x00CLEAR\x00";
 
+/// Structured tool lifecycle event for WebSocket/UI consumers.
+/// Unlike `ObserverEvent` (which is intentionally lightweight for metrics),
+/// this carries full args and output for rich UI rendering.
+#[derive(Debug, Clone)]
+pub(crate) enum ToolEvent {
+    /// A tool call is about to be executed.
+    Start {
+        tool: String,
+        args: serde_json::Value,
+    },
+    /// A tool call has completed.
+    Finish {
+        tool: String,
+        output: String,
+        success: bool,
+        duration: Duration,
+    },
+}
+
 /// Extract a short hint from tool call arguments for progress display.
 fn truncate_tool_args_for_progress(name: &str, args: &serde_json::Value, max_len: usize) -> String {
     let hint = match name {
@@ -120,6 +139,21 @@ fn truncate_tool_args_for_progress(name: &str, args: &serde_json::Value, max_len
         Some(s) => truncate_with_ellipsis(s, max_len),
         None => String::new(),
     }
+}
+
+/// Summarize tool output for progress display.
+/// Collapses newlines into spaces and truncates to `max_len` characters.
+fn summarize_tool_output(output: &str, max_len: usize) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Collapse whitespace/newlines into single spaces for a compact one-liner.
+    let oneline: String = trimmed
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    truncate_with_ellipsis(&oneline, max_len)
 }
 
 /// Convert a tool registry to OpenAI function-calling format for native tool support.
@@ -1819,6 +1853,7 @@ pub(crate) async fn agent_turn(
         None,
         None,
         &[],
+        None,
     )
     .await
 }
@@ -2009,6 +2044,7 @@ pub(crate) async fn run_tool_call_loop(
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
+    on_tool_event: Option<tokio::sync::mpsc::UnboundedSender<ToolEvent>>,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2269,12 +2305,19 @@ pub(crate) async fn run_tool_call_loop(
         if let Some(ref tx) = on_delta {
             let llm_secs = llm_started_at.elapsed().as_secs();
             if !tool_calls.is_empty() {
-                let _ = tx
-                    .send(format!(
-                        "\u{1f4ac} Got {} tool call(s) ({llm_secs}s)\n",
-                        tool_calls.len()
-                    ))
-                    .await;
+                let mut progress = format!(
+                    "\u{1f4ac} {} tool call(s) ({llm_secs}s):\n",
+                    tool_calls.len()
+                );
+                for tc in &tool_calls {
+                    let hint = truncate_tool_args_for_progress(&tc.name, &tc.arguments, 80);
+                    if hint.is_empty() {
+                        progress.push_str(&format!("  \u{2022} `{}`\n", tc.name));
+                    } else {
+                        progress.push_str(&format!("  \u{2022} `{}`: {hint}\n", tc.name));
+                    }
+                }
+                let _ = tx.send(progress).await;
             }
         }
 
@@ -2495,6 +2538,13 @@ pub(crate) async fn run_tool_call_loop(
                 let _ = tx.send(progress).await;
             }
 
+            // ── WS tool event: start ──────────────────────────
+            if let Some(ref tx) = on_tool_event {
+                let _ = tx.send(ToolEvent::Start {
+                    tool: tool_name.clone(),
+                    args: tool_args.clone(),
+                });
+            }
             executable_indices.push(idx);
             executable_calls.push(ParsedToolCall {
                 name: tool_name,
@@ -2562,10 +2612,26 @@ pub(crate) async fn run_tool_call_loop(
                 } else {
                     "\u{274c}"
                 };
+                let output_preview = summarize_tool_output(&outcome.output, 120);
                 tracing::debug!(tool = %call.name, secs, "Sending progress complete to draft");
-                let _ = tx.send(format!("{icon} {} ({secs}s)\n", call.name)).await;
+                if output_preview.is_empty() {
+                    let _ = tx.send(format!("{icon} `{}` ({secs}s)\n", call.name)).await;
+                } else {
+                    let _ = tx
+                        .send(format!("{icon} `{}` ({secs}s): {output_preview}\n", call.name))
+                        .await;
+                }
             }
 
+            // ── WS tool event: finish ──────────────────────────
+            if let Some(ref tx) = on_tool_event {
+                let _ = tx.send(ToolEvent::Finish {
+                    tool: call.name.clone(),
+                    output: outcome.output.clone(),
+                    success: outcome.success,
+                    duration: outcome.duration,
+                });
+            }
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
@@ -2988,6 +3054,7 @@ pub async fn run(
             None,
             None,
             &[],
+            None,
         )
         .await?;
         final_output = response.clone();
@@ -3109,6 +3176,7 @@ pub async fn run(
                 None,
                 None,
                 &[],
+                None,
             )
             .await
             {
@@ -3693,6 +3761,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3741,6 +3810,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3781,6 +3851,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -3907,6 +3978,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("parallel execution should complete");
@@ -3976,6 +4048,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4032,6 +4105,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("native fallback id flow should complete");

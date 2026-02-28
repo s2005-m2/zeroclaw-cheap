@@ -1757,6 +1757,7 @@ async fn process_channel_message(
                 } else {
                     ctx.non_cli_excluded_tools.as_ref()
                 },
+                None,
             ),
         ) => LlmExecutionResult::Completed(result),
     };

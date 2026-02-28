@@ -1504,11 +1504,9 @@ impl Channel for LarkChannel {
             if body.is_empty() && title.is_none() {
                 continue;
             }
+            let elements = build_lark_card_elements(body);
             let mut card = serde_json::json!({
-                "elements": [{
-                    "tag": "markdown",
-                    "content": body
-                }]
+                "elements": elements
             });
             if let Some(t) = title {
                 card["header"] = serde_json::json!({
@@ -1987,6 +1985,134 @@ fn parse_lark_attachment_markers(message: &str) -> (String, Vec<LarkAttachment>)
     (cleaned.trim().to_string(), attachments)
 }
 
+/// Check if a line looks like a markdown table separator row (e.g. `|---|---|`).
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+        return false;
+    }
+    trimmed[1..trimmed.len() - 1]
+        .split('|')
+        .all(|cell| {
+            let c = cell.trim();
+            !c.is_empty()
+                && c.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch == ' ')
+        })
+}
+
+/// Parse a contiguous block of markdown table lines into a Feishu CardKit table element.
+/// Returns `None` if the block is not a valid table (fewer than 2 rows or missing separator).
+fn parse_markdown_table_to_element(lines: &[&str]) -> Option<serde_json::Value> {
+    if lines.len() < 3 {
+        return None;
+    }
+    if !is_table_separator(lines[1]) {
+        return None;
+    }
+    let split_row = |line: &str| -> Vec<String> {
+        let trimmed = line.trim();
+        let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+        let inner = inner.strip_suffix('|').unwrap_or(inner);
+        inner.split('|').map(|c| c.trim().to_string()).collect()
+    };
+    let headers = split_row(lines[0]);
+    if headers.is_empty() {
+        return None;
+    }
+    let columns: Vec<serde_json::Value> = headers
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            serde_json::json!({
+                "tag": "column",
+                "name": format!("c{i}"),
+                "display_name": h,
+                "width": "auto"
+            })
+        })
+        .collect();
+    let rows: Vec<serde_json::Value> = lines[2..]
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let cells = split_row(l);
+            let mut row = serde_json::Map::new();
+            for (i, _) in headers.iter().enumerate() {
+                let val = cells.get(i).cloned().unwrap_or_default();
+                row.insert(format!("c{i}"), serde_json::Value::String(val));
+            }
+            serde_json::Value::Object(row)
+        })
+        .collect();
+    Some(serde_json::json!({
+        "tag": "table",
+        "page_size": rows.len() + 1,
+        "columns": columns,
+        "rows": rows
+    }))
+}
+
+/// Build a list of Feishu CardKit elements from text that may contain markdown tables.
+/// Markdown tables are converted to `"tag": "table"` elements; surrounding text
+/// becomes `"tag": "markdown"` elements. Headings in markdown segments are converted to bold.
+fn build_lark_card_elements(text: &str) -> Vec<serde_json::Value> {
+    let all_lines: Vec<&str> = text.lines().collect();
+    let mut elements: Vec<serde_json::Value> = Vec::new();
+    let mut md_buf: Vec<&str> = Vec::new();
+    let mut i = 0;
+
+    let flush_md = |buf: &mut Vec<&str>, elems: &mut Vec<serde_json::Value>| {
+        let joined = buf.join("\n");
+        let trimmed = joined.trim();
+        if !trimmed.is_empty() {
+            elems.push(serde_json::json!({
+                "tag": "markdown",
+                "content": lark_headers_to_bold(trimmed)
+            }));
+        }
+        buf.clear();
+    };
+
+    while i < all_lines.len() {
+        // Detect start of a potential table: line starts with '|' and next line is separator
+        let line = all_lines[i];
+        if line.trim().starts_with('|')
+            && i + 1 < all_lines.len()
+            && is_table_separator(all_lines[i + 1])
+        {
+            // Flush accumulated markdown
+            flush_md(&mut md_buf, &mut elements);
+            // Collect contiguous table lines
+            let table_start = i;
+            i += 2; // skip header + separator
+            while i < all_lines.len() && all_lines[i].trim().starts_with('|') {
+                i += 1;
+            }
+            let table_lines = &all_lines[table_start..i];
+            if let Some(table_elem) = parse_markdown_table_to_element(table_lines) {
+                elements.push(table_elem);
+            } else {
+                // Fallback: keep as markdown
+                for tl in table_lines {
+                    md_buf.push(tl);
+                }
+            }
+        } else {
+            md_buf.push(line);
+            i += 1;
+        }
+    }
+    flush_md(&mut md_buf, &mut elements);
+    if elements.is_empty() {
+        elements.push(serde_json::json!({
+            "tag": "markdown",
+            "content": ""
+        }));
+    }
+    elements
+}
+
 /// Split text by `## ` headings into sections. Each section is (Option<title>, body).
 /// Sub-headings (`###` and below) are converted to bold. Lone `#` headings are also converted to bold.
 fn split_lark_sections(text: &str) -> Vec<(Option<String>, String)> {
@@ -2034,20 +2160,58 @@ fn split_lark_sections(text: &str) -> Vec<(Option<String>, String)> {
 }
 
 /// Replace all markdown headings (`#` through `######`) with bold text.
-/// Used for streaming paths where we cannot split into multiple cards.
+/// Also converts markdown tables to a readable list format for streaming paths
+/// where we cannot use native table elements.
 fn lark_headers_to_bold(text: &str) -> String {
-    text.lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            for prefix in ["###### ", "##### ", "#### ", "### ", "## ", "# "] {
-                if let Some(rest) = trimmed.strip_prefix(prefix) {
-                    return format!("**{}**", rest.trim());
-                }
+    let all_lines: Vec<&str> = text.lines().collect();
+    let mut result_lines: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < all_lines.len() {
+        let line = all_lines[i];
+        let trimmed = line.trim_start();
+        // Detect markdown table start
+        if trimmed.starts_with('|')
+            && i + 1 < all_lines.len()
+            && is_table_separator(all_lines[i + 1])
+        {
+            let split_row = |l: &str| -> Vec<String> {
+                let t = l.trim();
+                let inner = t.strip_prefix('|').unwrap_or(t);
+                let inner = inner.strip_suffix('|').unwrap_or(inner);
+                inner.split('|').map(|c| c.trim().to_string()).collect()
+            };
+            let headers = split_row(all_lines[i]);
+            i += 2; // skip header + separator
+            while i < all_lines.len() && all_lines[i].trim().starts_with('|') {
+                let cells = split_row(all_lines[i]);
+                let pairs: Vec<String> = headers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, h)| {
+                        let val = cells.get(j).map(|s| s.as_str()).unwrap_or("");
+                        if val.is_empty() { None } else { Some(format!("**{h}**: {val}")) }
+                    })
+                    .collect();
+                result_lines.push(pairs.join(" | "));
+                i += 1;
             }
-            line.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+            continue;
+        }
+        // Convert headings to bold
+        let mut converted = false;
+        for prefix in ["###### ", "##### ", "#### ", "### ", "## ", "# "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                result_lines.push(format!("**{}**", rest.trim()));
+                converted = true;
+                break;
+            }
+        }
+        if !converted {
+            result_lines.push(line.to_string());
+        }
+        i += 1;
+    }
+    result_lines.join("\n")
 }
 
 /// Legacy wrapper: extract only `[IMAGE:…]` markers (used by existing tests).
@@ -2944,5 +3108,86 @@ mod tests {
         let msgs = ch.parse_event_payload(&payload);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].thread_ts, Some("om_msg_001".to_string()));
+    }
+    #[test]
+    fn is_table_separator_valid() {
+        assert!(is_table_separator("|---|---|"));
+        assert!(is_table_separator("| --- | --- |"));
+        assert!(is_table_separator("|:---|:---:|"));
+        assert!(is_table_separator("| :--- | ---: | :---: |"));
+    }
+
+    #[test]
+    fn is_table_separator_invalid() {
+        assert!(!is_table_separator("| hello | world |"));
+        assert!(!is_table_separator("not a table"));
+        assert!(!is_table_separator("||"));
+        assert!(!is_table_separator("| |"));
+    }
+
+    #[test]
+    fn parse_markdown_table_to_element_basic() {
+        let lines = vec![
+            "| 方式 | 推荐场景 |",
+            "|------|------|",
+            "| A | 场景一 |",
+            "| B | 场景二 |",
+        ];
+        let elem = parse_markdown_table_to_element(&lines).unwrap();
+        assert_eq!(elem["tag"], "table");
+        let cols = elem["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0]["display_name"], "方式");
+        assert_eq!(cols[1]["display_name"], "推荐场景");
+        let rows = elem["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["c0"], "A");
+        assert_eq!(rows[0]["c1"], "场景一");
+        assert_eq!(rows[1]["c0"], "B");
+    }
+
+    #[test]
+    fn parse_markdown_table_to_element_too_few_lines() {
+        let lines = vec!["| A | B |", "|---|---|"];
+        // Only header + separator, no data rows — still valid (0 data rows)
+        let elem = parse_markdown_table_to_element(&lines);
+        // 3 lines minimum required
+        assert!(elem.is_none());
+    }
+    #[test]
+    fn build_lark_card_elements_mixed_markdown_and_table() {
+        let text = "Some intro text\n\n| H1 | H2 |\n|---|---|\n| a | b |\n\nAfter table.";
+        let elems = build_lark_card_elements(text);
+        assert_eq!(elems.len(), 3);
+        assert_eq!(elems[0]["tag"], "markdown");
+        assert!(elems[0]["content"].as_str().unwrap().contains("intro"));
+        assert_eq!(elems[1]["tag"], "table");
+        assert_eq!(elems[2]["tag"], "markdown");
+        assert!(elems[2]["content"].as_str().unwrap().contains("After table"));
+    }
+    #[test]
+    fn build_lark_card_elements_no_table() {
+        let text = "Just plain markdown text\n**bold**";
+        let elems = build_lark_card_elements(text);
+        assert_eq!(elems.len(), 1);
+        assert_eq!(elems[0]["tag"], "markdown");
+    }
+    #[test]
+    fn build_lark_card_elements_only_table() {
+        let text = "| A | B |\n|---|---|\n| 1 | 2 |";
+        let elems = build_lark_card_elements(text);
+        assert_eq!(elems.len(), 1);
+        assert_eq!(elems[0]["tag"], "table");
+    }
+    #[test]
+    fn lark_headers_to_bold_converts_tables_to_list_format() {
+        let text = "Before\n| H1 | H2 |\n|---|---|\n| a | b |\nAfter";
+        let result = lark_headers_to_bold(text);
+        assert!(result.contains("Before"));
+        assert!(result.contains("After"));
+        assert!(result.contains("**H1**: a"));
+        assert!(result.contains("**H2**: b"));
+        // Should NOT contain pipe-delimited table lines
+        assert!(!result.contains("|---|"));
     }
 }
