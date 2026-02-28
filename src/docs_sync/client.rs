@@ -396,4 +396,38 @@ impl FeishuDocsClient {
         }
         Ok(())
     }
+
+    /// POST /drive/v1/files/{file_token}/subscribe — subscribe to file edit events.
+    ///
+    /// This is required for `drive.file.edit_v1` events to fire on the WebSocket
+    /// connection. Without calling this API per-document, the event subscription
+    /// configured in the Feishu developer console alone is not sufficient.
+    pub async fn subscribe_file_events(
+        &self,
+        file_token: &str,
+        file_type: &str,
+    ) -> Result<()> {
+        let token = self.get_token().await?;
+        let url = format!(
+            "{FEISHU_BASE_URL}/drive/v1/files/{file_token}/subscribe?file_type={file_type}&event_type=file.edited_v1"
+        );
+        let resp = self
+            .send_with_retry(|| self.http.post(&url).bearer_auth(&token))
+            .await?;
+        let status = resp.status();
+        let data: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            bail!("Feishu subscribe_file_events failed: status={status}, body={data}");
+        }
+        let code = data.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            let msg = data
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            bail!("Feishu subscribe_file_events error: {msg}");
+        }
+        tracing::info!("docs_sync: subscribed to edit events for {file_token} (type={file_type})");
+        Ok(())
+    }
 }

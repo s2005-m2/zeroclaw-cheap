@@ -157,6 +157,14 @@ pub async fn run(
             Err(e) => tracing::warn!("docs_sync: push '{filename}' failed: {e}"),
         }
     }
+    // ── Step 1b: Subscribe to edit events for all synced documents ──
+    // Without per-document subscription, drive.file.edit_v1 events will NOT fire
+    // even if the event is enabled in the Feishu developer console.
+    for entry in lock.values() {
+        if let Err(e) = client.subscribe_file_events(&entry.doc_id, "docx").await {
+            tracing::warn!("docs_sync: subscribe failed for {}: {e}", entry.doc_id);
+        }
+    }
     // ── Step 2: Start local file watcher ──
     let watch_paths: Vec<PathBuf> = sync_files.iter().map(|f| workspace.join(f)).collect();
     let mut file_watcher = super::FileWatcher::watch(&watch_paths)?;
@@ -253,6 +261,10 @@ pub async fn run(
                         let _ = save_lock(&lock_path, &lock);
                         if is_new_doc {
                             sharer.share_single_doc_with_all(&filename, &doc_id).await;
+                            // Subscribe to edit events so drive.file.edit_v1 fires
+                            if let Err(e) = client.subscribe_file_events(&doc_id, "docx").await {
+                                tracing::warn!("docs_sync: subscribe failed for {doc_id}: {e}");
+                            }
                         }
                     }
                     Err(e) => tracing::warn!("docs_sync: push failed: {e}"),
