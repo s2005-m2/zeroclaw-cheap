@@ -38,9 +38,13 @@ pub struct Agent {
     history: Vec<ConversationMessage>,
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
+    #[cfg(feature = "mcp")]
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
+    #[cfg(feature = "mcp")]
     mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
+    #[cfg(feature = "mcp")]
     mcp_generation: u64,
+    #[cfg(feature = "mcp")]
     mcp_cached_context: String,
     hook_runner: Arc<crate::hooks::HookRunner>,
     shared_skills: Option<Arc<tokio::sync::RwLock<crate::skills::SkillsState>>>,
@@ -67,7 +71,9 @@ pub struct AgentBuilder {
     auto_save: Option<bool>,
     classification_config: Option<crate::config::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
+    #[cfg(feature = "mcp")]
     mcp_registry: Option<Arc<zeroclaw_mcp::registry::McpRegistry>>,
+    #[cfg(feature = "mcp")]
     mcp_pending_configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     shared_skills: Option<Arc<tokio::sync::RwLock<crate::skills::SkillsState>>>,
@@ -96,7 +102,9 @@ impl AgentBuilder {
             auto_save: None,
             classification_config: None,
             available_hints: None,
+            #[cfg(feature = "mcp")]
             mcp_registry: None,
+            #[cfg(feature = "mcp")]
             mcp_pending_configs: Vec::new(),
             hook_runner: None,
             shared_skills: None,
@@ -201,6 +209,7 @@ impl AgentBuilder {
         self
     }
 
+    #[cfg(feature = "mcp")]
     pub fn mcp_registry(mut self, registry: Arc<zeroclaw_mcp::registry::McpRegistry>) -> Self {
         self.mcp_registry = Some(registry);
         self
@@ -211,6 +220,7 @@ impl AgentBuilder {
         self
     }
 
+    #[cfg(feature = "mcp")]
     pub fn mcp_pending_configs(
         mut self,
         configs: Vec<zeroclaw_mcp::config::McpServerConfig>,
@@ -273,9 +283,13 @@ impl AgentBuilder {
             history: Vec::new(),
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
+            #[cfg(feature = "mcp")]
             mcp_registry: self.mcp_registry,
+            #[cfg(feature = "mcp")]
             mcp_pending_configs: self.mcp_pending_configs,
+            #[cfg(feature = "mcp")]
             mcp_generation: u64::MAX,
+            #[cfg(feature = "mcp")]
             mcp_cached_context: String::new(),
             hook_runner: self
                 .hook_runner
@@ -287,12 +301,15 @@ impl AgentBuilder {
     }
 }
 
+#[cfg(feature = "mcp")]
 /// Unique sentinel used to delimit MCP context inside the system prompt.
 /// Chosen to be unlikely to appear in natural MCP content; the sanitizer
 /// strips it from MCP-sourced text to prevent spoofing.
 const MCP_CONTEXT_SENTINEL: &str = "\n<!-- zeroclaw:mcp-context-begin -->\n";
+#[cfg(feature = "mcp")]
 const MCP_CONTEXT_SENTINEL_END: &str = "\n<!-- zeroclaw:mcp-context-end -->\n";
 
+#[cfg(feature = "mcp")]
 /// Sanitize MCP-sourced text to prevent prompt injection.
 /// Truncates to `max_len` chars, strips control characters,
 /// and neutralizes system prompt boundary markers.
@@ -384,6 +401,7 @@ impl Agent {
         );
 
         // Wire MCP if enabled
+        #[cfg(feature = "mcp")]
         let (mcp_registry, mcp_pending_configs) = if config.mcp.enabled {
             let config_path = config.mcp.config_path.as_deref().unwrap_or(".mcp.json");
             let mcp_json_path = config.workspace_dir.join(config_path);
@@ -488,9 +506,11 @@ impl Agent {
             builder = builder.hook_runner(Arc::new(runner));
         }
 
+        #[cfg(feature = "mcp")]
         if let Some(registry) = mcp_registry {
             builder = builder.mcp_registry(registry);
         }
+        #[cfg(feature = "mcp")]
         if !mcp_pending_configs.is_empty() {
             builder = builder.mcp_pending_configs(mcp_pending_configs);
         }
@@ -668,6 +688,7 @@ impl Agent {
             tracing::warn!("hook fire_session_start panicked: {:?}", e);
         }
         // Connect pending MCP servers on first turn (deferred from sync from_config)
+        #[cfg(feature = "mcp")]
         if !self.mcp_pending_configs.is_empty() {
             if let Some(ref registry) = self.mcp_registry {
                 let pending = std::mem::take(&mut self.mcp_pending_configs);
@@ -690,6 +711,7 @@ impl Agent {
         }
 
         // Snapshot MCP tools if registry is present
+        #[cfg(feature = "mcp")]
         if let Some(ref registry) = self.mcp_registry {
             // Remove previous MCP bridge tools (names start with "mcp_")
             self.tools.retain(|t| !t.name().starts_with("mcp_"));

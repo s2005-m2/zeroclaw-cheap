@@ -24,6 +24,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     }
 
     // Auto-create .mcp.json when MCP is enabled and file is missing
+    #[cfg(feature = "mcp")]
     if config.mcp.enabled {
         let mcp_path = config.workspace_dir.join(
             config.mcp.config_path.as_deref().unwrap_or(".mcp.json"),

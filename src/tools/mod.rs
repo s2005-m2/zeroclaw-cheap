@@ -40,7 +40,9 @@ pub mod hardware_memory_map;
 pub mod hardware_memory_read;
 pub mod http_request;
 pub mod image_info;
+#[cfg(feature = "mcp")]
 pub mod mcp_bridge;
+#[cfg(feature = "mcp")]
 pub mod mcp_manage;
 pub mod memory_forget;
 pub mod memory_recall;
@@ -81,6 +83,7 @@ pub use glob_search::GlobSearchTool;
 pub use hook_reload::HookReloadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
+#[cfg(feature = "mcp")]
 pub use mcp_bridge::McpBridgeTool;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_recall::MemoryRecallTool;

@@ -3268,6 +3268,7 @@ pub async fn start_channels(
         ));
     }
 
+    #[cfg(feature = "mcp")]
     if config.mcp.enabled {
         tool_descs.push((
             "mcp_manage",

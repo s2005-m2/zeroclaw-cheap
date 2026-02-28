@@ -88,7 +88,7 @@ parking_lot = "0.12"
 async-trait = "0.1"
 
 # MCP (Model Context Protocol)
-zeroclaw-mcp = { path = "crates/zeroclaw-mcp" }
+zeroclaw-mcp = { path = "crates/zeroclaw-mcp", optional = true }
 
 # HMAC-SHA256 (Zhipu/GLM JWT auth)
 ring = "0.17"
@@ -201,6 +201,8 @@ libc = "0.2"
 
 [features]
 default = []
+mcp = ["dep:zeroclaw-mcp"]
+# mcp = MCP (Model Context Protocol) server management and tool bridging
 hardware = ["nusb", "tokio-serial"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]

@@ -5043,6 +5043,20 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
         &ctx.communication_style
     };
 
+    #[cfg(feature = "mcp")]
+    let mcp_agents_section = "## MCP Servers\n\n\
+         you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
+         ";
+    #[cfg(not(feature = "mcp"))]
+    let mcp_agents_section = "";
+
+    #[cfg(feature = "mcp")]
+    let mcp_tools_section = "## MCP Servers (optional, requires `[mcp] enabled = true`)\n\n\
+         Read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
+         ";
+    #[cfg(not(feature = "mcp"))]
+    let mcp_tools_section = "";
+
     let identity = format!(
         "# IDENTITY.md — Who Am I?\n\n\
          - **Name:** {agent}\n\
@@ -5091,9 +5105,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.\n\n\
          ## VPN Proxy\n\n\
          Read the `vpn-control` skill first — it contains the required workflow for VPN proxy management.\n\n\
-         ## MCP Servers\n\n\
-         you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
-         ## Lifecycle Hooks\n\n\
+         {mcp_agents_section}## Lifecycle Hooks\n\n\
          Read the `hook-manage` skill first — it contains the required workflow for creating and managing lifecycle hooks.\n\
          ## Crash Recovery\n\n\
          - If a run stops unexpectedly, recover context before acting.\n\
@@ -5173,7 +5185,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          *Update this anytime. The more {agent} knows, the better it helps.*\n"
     );
 
-    let tools = "\
+    let tools = format!("\
          # TOOLS.md — Local Notes\n\n\
          Skills define HOW tools work. This file is for YOUR specifics —\n\
          the stuff that's unique to your setup.\n\n\
@@ -5204,14 +5216,12 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
            - Don't use when: uncertain about impact; verify before deleting.\n\n\
          ## VPN & Network (optional, requires `--features vpn`)\n\n\
          Read the `vpn-control` skill for VPN proxy management workflow.\n\n\
-         ## MCP Servers (optional, requires `[mcp] enabled = true`)\n\n\
-         Read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
-         ## Skills Management\n\n\
+         {mcp_tools_section}## Skills Management\n\n\
          Read the `skill-management` skill first — it contains the required workflow for managing skills.\n\n\
          ## Lifecycle Hooks\n\n\
          Read the `hook-manage` skill for hook creation, editing, and management workflow.\n\
          ---\n\
-         *Add whatever helps you do your job. This is your cheat sheet.*\n";
+         *Add whatever helps you do your job. This is your cheat sheet.*\n");
 
     let bootstrap = format!(
         "# BOOTSTRAP.md — Hello, World\n\n\
