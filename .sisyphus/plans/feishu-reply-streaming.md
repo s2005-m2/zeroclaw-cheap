@@ -160,7 +160,7 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
 
 ## TODOs
 
-- [ ] 1. Fix `create_card()` with streaming config and element_id
+- [x] 1. Fix `create_card()` with streaming config and element_id
 
   **What to do**:
   - Add constant `STREAMING_ELEMENT_ID: &str = "content"` near the top of `lark.rs`
@@ -219,7 +219,7 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
 
   **Commit**: NO (groups with Task 2)
 
-- [ ] 2. Replace `update_card()` with element-level update + add `close_streaming()`
+- [x] 2. Replace `update_card()` with element-level update + add `close_streaming()`
 
   **What to do**:
   - Rename existing `update_card()` to `update_card_whole()` (used only by `stop_typing()`)
@@ -297,7 +297,7 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
   - Message: `feat(lark): fix streaming card with element-level update and close_streaming`
   - Files: `src/channels/lark.rs`
   - Pre-commit: `cargo test -- lark`
-- [ ] 3. Thread `message_id` into `ChannelMessage.thread_ts` for P2P messages
+- [x] 3. Thread `message_id` into `ChannelMessage.thread_ts` for P2P messages
   **What to do**:
   - In `listen_ws()` (line 634), change `thread_ts: None` to:
     `thread_ts: if lark_msg.chat_type == "p2p" { Some(lark_msg.message_id.clone()) } else { None }`
@@ -343,7 +343,7 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
     Evidence: .sisyphus/evidence/task-3-thread-ts-http.txt
   ```
   **Commit**: NO (groups with Task 4)
-- [ ] 4. Add `reply_text()` method and reply path in `send()`
+- [x] 4. Add `reply_text()` method and reply path in `send()`
   **What to do**:
   - Add URL helper: `fn reply_message_url(&self, message_id: &str) -> String { format!("{}/im/v1/messages/{message_id}/reply", self.api_base()) }`
   - Add `reply_text()` method that sends plain text via reply API:
@@ -398,7 +398,7 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
   - Message: `feat(lark): add plain text reply API for P2P messages`
   - Files: `src/channels/lark.rs`
   - Pre-commit: `cargo test -- lark`
-- [ ] 5. Modify `channels/mod.rs`: stop-flag in draft_updater + always `send()` for final response
+- [x] 5. Modify `channels/mod.rs`: stop-flag in draft_updater + always `send()` for final response
   **What to do**:
   This is the core architecture change. Three modifications to `channels/mod.rs`:
 
@@ -465,7 +465,7 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
     Evidence: .sisyphus/evidence/task-5-flow-split.txt
   ```
   **Commit**: NO (groups with Task 6)
-- [ ] 6. Re-enable `stream_mode` from config + `finalize_draft` closes card + unit tests
+- [x] 6. Re-enable `stream_mode` from config + `finalize_draft` closes card + unit tests
   **What to do**:
   **6a. Re-enable stream_mode (lines 284, 300, 316)**:
   - In `from_lark_channel_config()`, `from_lark_config()`, `from_feishu_config()`:
@@ -526,15 +526,15 @@ Critical Path: Task 1 → Task 2 → Task 3 → Task 5 → Task 6 → F1-F3
 
 ## Final Verification Wave
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. For each "Must Have": verify implementation exists. For each "Must NOT Have": search codebase for forbidden patterns. Check evidence files exist. Compare deliverables against plan.
   Output: `Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   Run `cargo test` + `cargo clippy --all-targets -- -D warnings`. Review all changed files for: `as any`/`@ts-ignore` equivalents, empty catches, commented-out code, unused imports. Check AI slop: excessive comments, over-abstraction.
   Output: `Build [PASS/FAIL] | Lint [PASS/FAIL] | Tests [N pass/N fail] | VERDICT`
 
-- [ ] F3. **Scope Fidelity Check** — `deep`
+- [x] F3. **Scope Fidelity Check** — `deep`
   For each task: read "What to do", read actual diff. Verify 1:1 — everything in spec was built, nothing beyond spec was built. Check "Must NOT do" compliance. Detect cross-task contamination. Flag unaccounted changes.
   Output: `Tasks [N/N compliant] | Contamination [CLEAN/N issues] | VERDICT`
 
