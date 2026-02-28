@@ -1680,17 +1680,21 @@ async fn process_channel_message(
         let draft_id = draft_id_ref.to_string();
         Some(tokio::spawn(async move {
             let mut accumulated = String::new();
+            let mut card_closed = false;
             while let Some(delta) = rx.recv().await {
                 if delta == crate::agent::loop_::DRAFT_CLEAR_SENTINEL {
                     accumulated.clear();
+                    card_closed = true;
                     continue;
                 }
-                accumulated.push_str(&delta);
-                if let Err(e) = channel
-                    .update_draft(&reply_target, &draft_id, &accumulated)
-                    .await
-                {
-                    tracing::debug!("Draft update failed: {e}");
+                if !card_closed {
+                    accumulated.push_str(&delta);
+                    if let Err(e) = channel
+                        .update_draft(&reply_target, &draft_id, &accumulated)
+                        .await
+                    {
+                        tracing::debug!("Draft update failed: {e}");
+                    }
                 }
             }
         }))
@@ -1907,20 +1911,15 @@ async fn process_channel_message(
             if let Some(channel) = target_channel.as_ref() {
                 if let Some(ref draft_id) = draft_message_id {
                     if let Err(e) = channel
-                        .finalize_draft(&msg.reply_target, draft_id, &delivered_response)
+                        .finalize_draft(&msg.reply_target, draft_id, "")
                         .await
                     {
-                        tracing::warn!("Failed to finalize draft: {e}; sending as new message");
-                        let _ = channel
-                            .send(
-                                &SendMessage::new(&delivered_response, &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone()),
-                            )
-                            .await;
+                        tracing::warn!("Failed to finalize draft: {e}");
                     }
-                } else if let Err(e) = channel
+                }
+                if let Err(e) = channel
                     .send(
-                        &SendMessage::new(delivered_response, &msg.reply_target)
+                        &SendMessage::new(&delivered_response, &msg.reply_target)
                             .in_thread(msg.thread_ts.clone()),
                     )
                     .await
@@ -1985,17 +1984,19 @@ async fn process_channel_message(
                 );
                 if let Some(channel) = target_channel.as_ref() {
                     if let Some(ref draft_id) = draft_message_id {
-                        let _ = channel
-                            .finalize_draft(&msg.reply_target, draft_id, error_text)
-                            .await;
-                    } else {
-                        let _ = channel
-                            .send(
-                                &SendMessage::new(error_text, &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone()),
-                            )
-                            .await;
+                        if let Err(e) = channel
+                            .finalize_draft(&msg.reply_target, draft_id, "")
+                            .await
+                        {
+                            tracing::warn!("Failed to finalize draft on context window error: {e}");
+                        }
                     }
+                    let _ = channel
+                        .send(
+                            &SendMessage::new(error_text, &msg.reply_target)
+                                .in_thread(msg.thread_ts.clone()),
+                        )
+                        .await;
                 }
             } else {
                 eprintln!(
@@ -2032,18 +2033,21 @@ async fn process_channel_message(
                     );
                 }
                 if let Some(channel) = target_channel.as_ref() {
+                    let error_text = format!("⚠️ Error: {e}");
                     if let Some(ref draft_id) = draft_message_id {
-                        let _ = channel
-                            .finalize_draft(&msg.reply_target, draft_id, &format!("⚠️ Error: {e}"))
-                            .await;
-                    } else {
-                        let _ = channel
-                            .send(
-                                &SendMessage::new(format!("⚠️ Error: {e}"), &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone()),
-                            )
-                            .await;
+                        if let Err(e) = channel
+                            .finalize_draft(&msg.reply_target, draft_id, "")
+                            .await
+                        {
+                            tracing::warn!("Failed to finalize draft on error: {e}");
+                        }
                     }
+                    let _ = channel
+                        .send(
+                            &SendMessage::new(error_text, &msg.reply_target)
+                                .in_thread(msg.thread_ts.clone()),
+                        )
+                        .await;
                 }
             }
         }
@@ -2081,17 +2085,19 @@ async fn process_channel_message(
                 let error_text =
                     "⚠️ Request timed out while waiting for the model. Please try again.";
                 if let Some(ref draft_id) = draft_message_id {
-                    let _ = channel
-                        .finalize_draft(&msg.reply_target, draft_id, error_text)
-                        .await;
-                } else {
-                    let _ = channel
-                        .send(
-                            &SendMessage::new(error_text, &msg.reply_target)
-                                .in_thread(msg.thread_ts.clone()),
-                        )
-                        .await;
+                    if let Err(e) = channel
+                        .finalize_draft(&msg.reply_target, draft_id, "")
+                        .await
+                    {
+                        tracing::warn!("Failed to finalize draft on timeout: {e}");
+                    }
                 }
+                let _ = channel
+                    .send(
+                        &SendMessage::new(error_text, &msg.reply_target)
+                            .in_thread(msg.thread_ts.clone()),
+                    )
+                    .await;
             }
         }
     }

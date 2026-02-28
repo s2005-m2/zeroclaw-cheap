@@ -16,6 +16,7 @@ const LARK_WS_BASE_URL: &str = "https://open.larksuite.com";
 const ACK_REACTION_EMOJI_TYPE: &str = "MUSCLE";
 const LARK_MAX_FILE_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 const LARK_MAX_FILE_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
+const STREAMING_ELEMENT_ID: &str = "content";
 
 /// Attachment types recognized in outgoing Lark messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,7 +282,7 @@ impl LarkChannel {
             platform,
         );
         ch.receive_mode = config.receive_mode.clone();
-        ch.stream_mode = StreamMode::Off; // CardKit update_card API is broken ("card is required"); disable streaming
+        ch.stream_mode = config.stream_mode.clone();
         ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
@@ -297,7 +298,7 @@ impl LarkChannel {
             LarkPlatform::Lark,
         );
         ch.receive_mode = config.receive_mode.clone();
-        ch.stream_mode = StreamMode::Off; // CardKit update_card API is broken ("card is required"); disable streaming
+        ch.stream_mode = config.stream_mode.clone();
         ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
@@ -313,7 +314,7 @@ impl LarkChannel {
             LarkPlatform::Feishu,
         );
         ch.receive_mode = config.receive_mode.clone();
-        ch.stream_mode = StreamMode::Off; // CardKit update_card API is broken ("card is required"); disable streaming
+        ch.stream_mode = config.stream_mode.clone();
         ch.draft_update_interval_ms = config.draft_update_interval_ms;
         ch
     }
@@ -370,6 +371,10 @@ impl LarkChannel {
 
     fn cardkit_url(&self) -> String {
         format!("{}/cardkit/v1/cards", self.api_base())
+    }
+
+    fn reply_message_url(&self, message_id: &str) -> String {
+        format!("{}/im/v1/messages/{message_id}/reply", self.api_base())
     }
 
 
@@ -641,7 +646,7 @@ impl LarkChannel {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
-                thread_ts: None,
+                thread_ts: if lark_msg.chat_type == "p2p" { Some(lark_msg.message_id.clone()) } else { None },
             };
 
             tracing::debug!("Lark WS: message in {}", lark_msg.chat_id);
@@ -1157,6 +1162,11 @@ impl LarkChannel {
             .and_then(|c| c.as_str())
             .unwrap_or(open_id);
 
+        let message_id = event
+            .pointer("/message/message_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
         messages.push(ChannelMessage {
             id: Uuid::new_v4().to_string(),
             sender: chat_id.to_string(),
@@ -1164,7 +1174,7 @@ impl LarkChannel {
             content: text,
             channel: self.channel_name().to_string(),
             timestamp,
-            thread_ts: None,
+            thread_ts: if chat_type == "p2p" { Some(message_id.to_string()) } else { None },
         });
 
         messages
@@ -1199,8 +1209,8 @@ impl LarkChannel {
             .map(String::from)
             .ok_or_else(|| anyhow::anyhow!("Lark create_card: missing card_id in response"))
     }
-    /// Update an existing CardKit card entity with new content.
-    async fn update_card(&self, card_id: &str, content_json: &str, sequence: u64) -> anyhow::Result<()> {
+    /// Update an existing CardKit card entity with new content (whole-card replacement).
+    async fn update_card_whole(&self, card_id: &str, content_json: &str, sequence: u64) -> anyhow::Result<()> {
         let token = self.get_tenant_access_token().await?;
         let url = format!("{}/{card_id}", self.cardkit_url());
         let body = serde_json::json!({
@@ -1233,10 +1243,99 @@ impl LarkChannel {
                 .await?;
             let rs = resp2.status();
             let rr: serde_json::Value = resp2.json().await.unwrap_or_default();
-            ensure_lark_send_success(rs, &rr, "update_card after token refresh")?;
+            ensure_lark_send_success(rs, &rr, "update_card_whole after token refresh")?;
             return Ok(());
         }
-        ensure_lark_send_success(status, &parsed, "update_card")?;
+        ensure_lark_send_success(status, &parsed, "update_card_whole")?;
+        Ok(())
+    }
+    /// Update a single element's content in a CardKit streaming card.
+    async fn update_card_element(&self, card_id: &str, text: &str, sequence: u64) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = format!("{}/{card_id}/elements/{STREAMING_ELEMENT_ID}/content", self.cardkit_url());
+        let uuid = format!("s_{card_id}_{sequence}");
+        let body = serde_json::json!({
+            "content": text,
+            "sequence": sequence,
+            "uuid": uuid,
+        });
+        let resp = self
+            .http_client()
+            .put(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let raw = resp.text().await.unwrap_or_default();
+        let parsed = serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": raw }));
+        if should_refresh_lark_tenant_token(status, &parsed) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let resp2 = self
+                .http_client()
+                .put(&url)
+                .header("Authorization", format!("Bearer {new_token}"))
+                .header("Content-Type", "application/json; charset=utf-8")
+                .json(&body)
+                .send()
+                .await?;
+            let rs = resp2.status();
+            let rr: serde_json::Value = resp2.json().await.unwrap_or_default();
+            ensure_lark_send_success(rs, &rr, "update_card_element after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &parsed, "update_card_element")?;
+        Ok(())
+    }
+    /// Close streaming mode on a CardKit card via settings PATCH.
+    async fn close_streaming(&self, card_id: &str, summary: &str, sequence: u64) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = format!("{}/{card_id}/settings", self.cardkit_url());
+        let uuid = format!("c_{card_id}_{sequence}");
+        let settings = serde_json::json!({
+            "config": {
+                "streaming_mode": false,
+                "summary": { "content": summary }
+            }
+        })
+        .to_string();
+        let body = serde_json::json!({
+            "settings": settings,
+            "sequence": sequence,
+            "uuid": uuid,
+        });
+        let resp = self
+            .http_client()
+            .patch(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let raw = resp.text().await.unwrap_or_default();
+        let parsed = serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": raw }));
+        if should_refresh_lark_tenant_token(status, &parsed) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let resp2 = self
+                .http_client()
+                .patch(&url)
+                .header("Authorization", format!("Bearer {new_token}"))
+                .header("Content-Type", "application/json; charset=utf-8")
+                .json(&body)
+                .send()
+                .await?;
+            let rs = resp2.status();
+            let rr: serde_json::Value = resp2.json().await.unwrap_or_default();
+            ensure_lark_send_success(rs, &rr, "close_streaming after token refresh")?;
+            return Ok(());
+        }
+        ensure_lark_send_success(status, &parsed, "close_streaming")?;
         Ok(())
     }
     /// Send a card message referencing an existing CardKit card_id. Returns message_id.
@@ -1273,6 +1372,28 @@ impl LarkChannel {
             .and_then(|v| v.as_str())
             .map(String::from)
             .ok_or_else(|| anyhow::anyhow!("Lark send_card_message: missing message_id"))
+    }
+
+    /// Reply to a message with plain text via the Feishu reply API.
+    async fn reply_text(&self, message_id: &str, text: &str) -> anyhow::Result<()> {
+        let token = self.get_tenant_access_token().await?;
+        let url = self.reply_message_url(message_id);
+        let content = serde_json::json!({ "text": text }).to_string();
+        let body = serde_json::json!({
+            "msg_type": "text",
+            "content": content,
+            "reply_in_thread": true,
+        });
+        let (status, response) = self.send_text_once(&url, &token, &body).await?;
+        if should_refresh_lark_tenant_token(status, &response) {
+            self.invalidate_token().await;
+            let new_token = self.get_tenant_access_token().await?;
+            let (rs, rr) = self.send_text_once(&url, &new_token, &body).await?;
+            ensure_lark_send_success(rs, &rr, "reply_text after token refresh")?;
+        } else {
+            ensure_lark_send_success(status, &response, "reply_text")?;
+        }
+        Ok(())
     }
 
     // ── Typing indicator helpers ───────────────────────────────────────────
@@ -1329,7 +1450,7 @@ impl LarkChannel {
             })
             .to_string();
 
-            if let Err(e) = self.update_card(&card_id, &empty_json, 2).await {
+            if let Err(e) = self.update_card_whole(&card_id, &empty_json, 2).await {
                 tracing::warn!(
                     "[{}] stop_typing: failed to clear typing card {card_id}: {e}",
                     self.channel_name()
@@ -1366,6 +1487,15 @@ impl Channel for LarkChannel {
         }
         if text.is_empty() {
             return Ok(());
+        }
+        // If thread_ts is set (P2P message), reply via reply API with plain text
+        if let Some(ref msg_id) = message.thread_ts {
+            if let Err(e) = self.reply_text(msg_id, &text).await {
+                tracing::warn!("Lark reply_text failed, falling back to card send: {e}");
+                // Fall through to existing card-based send below
+            } else {
+                return Ok(());
+            }
         }
         let sections = split_lark_sections(&text);
         let token = self.get_tenant_access_token().await?;
@@ -1435,9 +1565,18 @@ impl Channel for LarkChannel {
 
         let card_json = serde_json::json!({
             "schema": "2.0",
+            "config": {
+                "streaming_mode": true,
+                "streaming_config": {
+                    "print_frequency_ms": 100,
+                    "print_count_per_time": 5
+                },
+                "summary": { "content": "..." }
+            },
             "body": {
                 "elements": [{
                     "tag": "markdown",
+                    "element_id": STREAMING_ELEMENT_ID,
                     "content": initial_text
                 }]
             }
@@ -1492,18 +1631,9 @@ impl Channel for LarkChannel {
             *seq += 1;
             *seq
         };
-        let card_json = serde_json::json!({
-            "schema": "2.0",
-            "body": {
-                "elements": [{
-                    "tag": "markdown",
-                    "content": lark_headers_to_bold(text)
-                }]
-            }
-        })
-        .to_string();
-        if let Err(e) = self.update_card(draft_id, &card_json, sequence).await {
-            tracing::warn!("Lark CardKit update_card failed (non-fatal): {e}");
+        let text = lark_headers_to_bold(text);
+        if let Err(e) = self.update_card_element(draft_id, &text, sequence).await {
+            tracing::warn!("Lark CardKit update_card_element failed (non-fatal): {e}");
         } else {
             self.last_draft_update
                 .lock()
@@ -1524,18 +1654,13 @@ impl Channel for LarkChannel {
             *seq += 1;
             *seq
         };
-        let card_json = serde_json::json!({
-            "schema": "2.0",
-            "body": {
-                "elements": [{
-                    "tag": "markdown",
-                    "content": lark_headers_to_bold(text)
-                }]
-            }
-        })
-        .to_string();
-        if let Err(e) = self.update_card(draft_id, &card_json, sequence).await {
-            tracing::warn!("Lark CardKit finalize_draft failed: {e}");
+        let summary = if text.is_empty() {
+            "✅ Done".to_string()
+        } else {
+            text.chars().take(20).collect::<String>()
+        };
+        if let Err(e) = self.close_streaming(draft_id, &summary, sequence).await {
+            tracing::warn!("Lark CardKit close_streaming failed: {e}");
         }
         // Clean up tracking state
         self.card_sequence
@@ -2775,5 +2900,49 @@ mod tests {
         let removed = ch.typing_card_ids.lock().unwrap().remove("oc_chat_abc");
         assert_eq!(removed, Some("card_typing_1".to_string()));
         assert!(ch.typing_card_ids.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_from_feishu_config_stream_mode() {
+        let config = crate::config::schema::FeishuConfig {
+            app_id: "cli_test".into(),
+            app_secret: "secret".into(),
+            encrypt_key: None,
+            verification_token: None,
+            allowed_users: vec![],
+            receive_mode: LarkReceiveMode::default(),
+            port: None,
+            stream_mode: StreamMode::Partial,
+            draft_update_interval_ms: 1000,
+        };
+        let ch = LarkChannel::from_feishu_config(&config);
+        assert_eq!(ch.stream_mode, StreamMode::Partial);
+    }
+    #[test]
+    fn test_reply_message_url() {
+        let ch = make_channel();
+        let url = ch.reply_message_url("om_test123");
+        assert!(url.contains("/im/v1/messages/om_test123/reply"));
+    }
+    #[test]
+    fn test_parse_event_payload_p2p_thread_ts() {
+        let ch = make_channel();
+        let payload = serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "ou_testuser123" } },
+                "message": {
+                    "message_type": "text",
+                    "content": "{\"text\": \"hello\"}",
+                    "chat_type": "p2p",
+                    "chat_id": "oc_chat_p2p",
+                    "message_id": "om_msg_001",
+                    "create_time": "1700000000000"
+                }
+            }
+        });
+        let msgs = ch.parse_event_payload(&payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].thread_ts, Some("om_msg_001".to_string()));
     }
 }
