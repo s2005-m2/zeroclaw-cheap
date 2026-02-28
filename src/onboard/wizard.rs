@@ -5090,11 +5090,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - Common pattern: you build a useful workflow -> save it as a skill for reuse.\n\n\
          Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.\n\n\
          ## VPN Proxy\n\n\
-         If `vpn_control` tool is available, you can manage network proxy for accessing blocked APIs.\n\
-         - Check `vpn_control status` before assuming network issues.\n\
-         - Use `vpn_control enable` when API calls fail due to network restrictions (e.g. OpenAI, Google, HuggingFace from China).\n\
-         - Use `vpn_control disable` when done, to reduce latency for local/domestic traffic.\n\
-         - Bypass domains (China sites, local services) are auto-configured; add more with `add_bypass`.\n\n\
+         Read the `vpn-control` skill first — it contains the required workflow for VPN proxy management.\n\n\
          ## MCP Servers\n\n\
          you MUST read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
          ## Lifecycle Hooks\n\n\
@@ -5207,21 +5203,11 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
            - Use when: memory is incorrect, stale, or explicitly requested to be removed.\n\
            - Don't use when: uncertain about impact; verify before deleting.\n\n\
          ## VPN & Network (optional, requires `--features vpn`)\n\n\
-         - **vpn_control** — Manage VPN proxy (Clash-based)\n\
-           - Use when: API calls fail due to network restrictions, need to access blocked services.\n\
-           - Don't use when: network is working fine, or accessing local/domestic services.\n\
-           - Workflow: `status` -> `enable` -> `list_nodes` -> `switch_node` if needed -> `disable` when done.\n\n\
+         Read the `vpn-control` skill for VPN proxy management workflow.\n\n\
          ## MCP Servers (optional, requires `[mcp] enabled = true`)\n\n\
-         - **mcp_manage** — Install/remove MCP servers for extended capabilities\n\
-           - Use when: user needs a capability not in built-in tools (e.g. database access, web fetch).\n\
-           - Don't use when: a built-in tool already covers the need.\n\
-           - Common servers: filesystem, git, fetch, postgres (all via `npx -y @modelcontextprotocol/server-<name>`).\n\n\
+         Read the `mcp-setup` skill first — it contains the required setup workflow.\n\n\
          ## Skills Management\n\n\
-         - **skill_manage** — Create, read, update, delete, and list agent skills at runtime\n\
-           - Use when: you need a new reusable capability, want to save a workflow as a skill, or manage existing skills.\n\
-           - Don't use when: a one-off shell command suffices.\n\
-           - Actions: `create`, `read`, `update`, `delete`, `list`.\n\
-           - Skills are hot-reloaded automatically after CRUD operations — no restart needed.\n\n\
+         Read the `skill-management` skill first — it contains the required workflow for managing skills.\n\n\
          ## Lifecycle Hooks\n\n\
          Read the `hook-manage` skill for hook creation, editing, and management workflow.\n\
          ---\n\

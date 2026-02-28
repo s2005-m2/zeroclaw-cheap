@@ -163,6 +163,13 @@ fn seed_builtin_skills(skills_dir: &Path) {
         let _ = std::fs::create_dir_all(&sm_dir);
         let _ = std::fs::write(&sm_path, include_str!("../../skills/skill-management/SKILL.md"));
     }
+
+    let vpn_dir = skills_dir.join("vpn-control");
+    let vpn_path = vpn_dir.join("SKILL.md");
+    if !vpn_path.exists() {
+        let _ = std::fs::create_dir_all(&vpn_dir);
+        let _ = std::fs::write(&vpn_path, include_str!("../../skills/vpn-control/SKILL.md"));
+    }
 }
 fn load_workspace_skills(workspace_dir: &Path, skip_audit: bool) -> Vec<Skill> {
     let skills_dir = workspace_dir.join("skills");

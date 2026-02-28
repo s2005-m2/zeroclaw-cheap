@@ -3267,6 +3267,7 @@ pub async fn start_channels(
             "Manage VPN proxy (Clash-based). Use when: API calls fail due to network restrictions. Actions: status, enable, disable, list_nodes, switch_node, refresh, add_bypass.",
         ));
     }
+
     if config.mcp.enabled {
         tool_descs.push((
             "mcp_manage",
